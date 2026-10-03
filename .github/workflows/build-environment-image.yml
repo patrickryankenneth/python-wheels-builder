@@ -6,6 +6,7 @@ on:
     paths:
       - "environments/alpine-3.24-musl/Containerfile"
       - "environments/alpine-3.24-musl/requirements-builder.txt"
+      - "environments/alpine-3.24-musl/assert-sccache-build.sh"
       - "environments/alpine-3.24-musl/apk.lock.*"
       - ".github/workflows/build-environment-image.yml"
   workflow_dispatch: {}
@@ -42,7 +43,7 @@ jobs:
         id: tag
         env:
           ARCH: ${{ matrix.arch }}
-        run: echo "tag=${{ hashFiles('environments/alpine-3.24-musl/Containerfile', 'environments/alpine-3.24-musl/requirements-builder.txt') }}-${ARCH}" >> "$GITHUB_OUTPUT"
+        run: echo "tag=${{ hashFiles('environments/alpine-3.24-musl/Containerfile', 'environments/alpine-3.24-musl/requirements-builder.txt', 'environments/alpine-3.24-musl/assert-sccache-build.sh') }}-${ARCH}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         env:
@@ -148,6 +149,8 @@ jobs:
             --arg rustup_sha256 "$(arg "$rustup_sha_var")" \
             --arg rust_version "$(arg RUST_VERSION)" \
             --arg sccache_version "$(arg SCCACHE_VERSION)" \
+            --arg cargo_auditable_version "$(arg CARGO_AUDITABLE_VERSION)" \
+            --arg assert_script_sha256 "$(sha256sum "$CONTEXT/assert-sccache-build.sh" | cut -d' ' -f1)" \
             --arg requirements_sha256 "$(sha256sum "$CONTEXT/requirements-builder.txt" | cut -d' ' -f1)" \
             --arg apk_lock_sha256 "$(sha256sum "$CONTEXT/apk.lock.$ARCH" | cut -d' ' -f1)" \
             --arg builder_image "$IMAGE@$DIGEST" \
@@ -155,6 +158,7 @@ jobs:
             '{base_image_ref:$base_ref, base_image_index_digest:$base_index, base_platform:$base_platform,
               base_platform_manifest_digest:$base_platform_digest, rustup_version:$rustup_version,
               rustup_sha256:$rustup_sha256, rust_version:$rust_version, sccache_version:$sccache_version,
+              cargo_auditable_version:$cargo_auditable_version, assert_script_sha256:$assert_script_sha256,
               requirements_builder_sha256:$requirements_sha256, apk_lock_sha256:$apk_lock_sha256,
               builder_image:$builder_image, source_commit:$commit}' > "builder-inputs.$ARCH.json"
           cat "builder-inputs.$ARCH.json"

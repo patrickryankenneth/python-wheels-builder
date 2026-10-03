@@ -1,0 +1,43 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/patrickryankenneth/python-wheels-builder/vex/2026-10-03",
+  "author": "patrickryankenneth@gmail.com",
+  "timestamp": "2026-10-03T18:49:01Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {"name": "CVE-2026-33055"},
+      "products": [{"@id": "pkg:cargo/tar@0.4.40"}],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "tar 0.4.40 is linked into sccache 0.18.0 only for creating archives (tar::Builder). The vulnerable behavior is in reading archives. tar::Archive is used only under src/bin/sccache-dist/, which requires the dist-server feature. The builder installs with --no-default-features and the image has no sccache-dist binary (asserted by assert-image.sh). Review by 2027-01-03, or on any sccache or tar version change."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-33056"},
+      "products": [{"@id": "pkg:cargo/tar@0.4.40"}],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The flaw is in unpacking crafted archives. sccache calls no unpack path outside sccache-dist, which is not built or shipped (see CVE-2026-33055). Review by 2027-01-03, or on any sccache or tar version change."
+    },
+    {
+      "vulnerability": {"name": "GHSA-3pv8-6f4r-ffg2"},
+      "products": [{"@id": "pkg:cargo/tar@0.4.40"}],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The flaw is PAX header desynchronization when reading a tar stream. sccache reads tar streams only in sccache-dist, which is not built or shipped (see CVE-2026-33055). Review by 2027-01-03, or on any sccache or tar version change."
+    },
+    {
+      "vulnerability": {"name": "GHSA-cq8v-f236-94qc"},
+      "products": [{"@id": "pkg:cargo/rand@0.8.5"}],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path",
+      "impact_statement": "The advisory requires a custom logger that calls into rand. sccache 0.18.0 source has no set_logger, set_boxed_logger or impl Log, and its only rand usage is OsRng and RngCore in four files. Review by 2027-01-03, or on any sccache or rand version change."
+    },
+    {
+      "vulnerability": {"name": "CVE-2026-25541", "aliases": ["GHSA-434x-w66g-qw3r"]},
+      "products": [{"@id": "pkg:cargo/bytes@1.10.1"}],
+      "status": "affected",
+      "action_statement": "Accepted, not suppressed. bytes 1.10.1 is in sccache's server protocol path (BytesMut in src/server.rs). Supporting controls, not a proof of non-exploitability: the server binds 127.0.0.1 or a Unix socket, and the frame length is capped at 8 MiB. Upstream main still resolves bytes 1.10.1 and has no release after 0.18.0. Severity MEDIUM, below the HIGH gate. Review by 2027-01-03, or when sccache updates bytes."
+    }
+  ]
+}

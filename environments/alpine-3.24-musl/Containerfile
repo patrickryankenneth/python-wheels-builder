@@ -84,16 +84,19 @@ ARG CARGO_AUDITABLE_VERSION=0.7.7
 # in the binary so Syft/Trivy scan what was actually compiled. The tool, the crate
 # sources and the registry are removed in the same layer. The guard fails the build if
 # the network stack is back.
+COPY assert-sccache-build.sh /tmp/assert-sccache-build.sh
 RUN set -eux; \
     cargo install cargo-auditable --version "${CARGO_AUDITABLE_VERSION}" --locked --root /tmp/auditable; \
     PATH="/tmp/auditable/bin:${PATH}" \
         cargo auditable install sccache --version "${SCCACHE_VERSION}" --locked --no-default-features; \
-    rm -rf /tmp/auditable /opt/cargo/registry /opt/cargo/git; \
+    sh /tmp/assert-sccache-build.sh "${SCCACHE_VERSION}"; \
+    rm -rf /tmp/auditable /tmp/assert-sccache-build.sh /opt/cargo/registry /opt/cargo/git; \
     sccache --version | grep -F "${SCCACHE_VERSION}"; \
     if grep -q -a -e opendal -e reqwest /opt/cargo/bin/sccache; then \
         echo "sccache contains network backend code" >&2; exit 1; fi
 ENV RUSTC_WRAPPER=/opt/cargo/bin/sccache \
     SCCACHE_DIR=/sccache \
+    SCCACHE_MAX_FRAME_LENGTH=8388608 \
     CARGO_TARGET_DIR=/cargo-target
 
 # maturin: exact version with hashes for both architectures.
