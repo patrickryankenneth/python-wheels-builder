@@ -133,6 +133,12 @@ jobs:
             aarch64) goarch=arm64; rustup_sha_var=RUSTUP_SHA256_AARCH64 ;;
             *) echo "::error::unknown arch $ARCH"; exit 1 ;;
           esac
+          # The runner image is a declared trust root (not pinned): record exactly what ran.
+          [ -n "${ImageOS:-}" ] && [ -n "${ImageVersion:-}" ] \
+            || { echo "::error::ImageOS/ImageVersion not set; not a GitHub-hosted runner?"; exit 1; }
+          docker_version="$(docker version --format '{{.Server.Version}}')"
+          buildx_version="$(docker buildx version | awk '{print $2}')"
+          [ -n "$docker_version" ] && [ -n "$buildx_version" ] || { echo "::error::cannot read docker/buildx versions"; exit 1; }
           arg() { sed -n "s/^ARG $1=//p" "$CONTEXT/Containerfile"; }
           base="$(awk '/^FROM /{print $2; exit}' "$CONTEXT/Containerfile")"
           base_ref="${base%@*}"
@@ -153,6 +159,11 @@ jobs:
             --arg assert_script_sha256 "$(sha256sum "$CONTEXT/assert-sccache-build.sh" | cut -d' ' -f1)" \
             --arg requirements_sha256 "$(sha256sum "$CONTEXT/requirements-builder.txt" | cut -d' ' -f1)" \
             --arg apk_lock_sha256 "$(sha256sum "$CONTEXT/apk.lock.$ARCH" | cut -d' ' -f1)" \
+            --arg runner_image_os "$ImageOS" \
+            --arg runner_image_version "$ImageVersion" \
+            --arg runner_arch "${RUNNER_ARCH:-}" \
+            --arg docker_version "$docker_version" \
+            --arg buildx_version "$buildx_version" \
             --arg builder_image "$IMAGE@$DIGEST" \
             --arg commit "$COMMIT" \
             '{base_image_ref:$base_ref, base_image_index_digest:$base_index, base_platform:$base_platform,
@@ -160,6 +171,8 @@ jobs:
               rustup_sha256:$rustup_sha256, rust_version:$rust_version, sccache_version:$sccache_version,
               cargo_auditable_version:$cargo_auditable_version, assert_script_sha256:$assert_script_sha256,
               requirements_builder_sha256:$requirements_sha256, apk_lock_sha256:$apk_lock_sha256,
+              runner:{image_os:$runner_image_os, image_version:$runner_image_version, arch:$runner_arch,
+                      docker_version:$docker_version, buildx_version:$buildx_version},
               builder_image:$builder_image, source_commit:$commit}' > "builder-inputs.$ARCH.json"
           cat "builder-inputs.$ARCH.json"
 
