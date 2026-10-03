@@ -1,0 +1,91 @@
+name: SBOM for builder image
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Run id of a green build-environment-image run on main
+        required: true
+        type: string
+
+permissions: {}
+
+env:
+  SYFT_VERSION: "1.54.0"
+  IMAGE: ghcr.io/patrickryankenneth/python-wheels-builder-alpine
+
+jobs:
+  sbom:
+    name: SBOM (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            syft_arch: amd64
+            syft_sha256: 54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            syft_arch: arm64
+            syft_sha256: ee6d4566373a05b344bc6b5f1706f14419bf9338ba39ff686e247deefe9b8818
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ inputs.build_run_id }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Load image digest from the build run
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::build_run_id must be digits"; exit 1; }
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" -n "image-digest-$ARCH" -D digests
+          D=$(tr -d '[:space:]' < "digests/image.digest.$ARCH")
+          [[ "$D" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest: $D"; exit 1; }
+          echo "D=$D" >> "$GITHUB_ENV"
+          echo "Image digest: $D"
+
+      - name: Verify build provenance (main only)
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE@$D" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build-environment-image.yml" \
+            --source-ref refs/heads/main
+
+      - name: Install pinned Syft
+        env:
+          SYFT_ARCH: ${{ matrix.syft_arch }}
+          SYFT_SHA256: ${{ matrix.syft_sha256 }}
+        run: |
+          set -euo pipefail
+          f="syft_${SYFT_VERSION}_linux_${SYFT_ARCH}.tar.gz"
+          curl -fsSL --proto '=https' -o "$f" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/$f"
+          echo "$SYFT_SHA256  $f" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/syft"
+          tar -xzf "$f" -C "$RUNNER_TEMP/syft" syft
+          "$RUNNER_TEMP/syft/syft" version
+
+      - name: Generate SBOMs
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: "false"
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          "$RUNNER_TEMP/syft/syft" "registry:$IMAGE@$D" \
+            -o "spdx-json=out/sbom.$ARCH.spdx.json" \
+            -o "cyclonedx-json=out/sbom.$ARCH.cdx.json"
+          cp "digests/image.digest.$ARCH" "digests/builder-inputs.$ARCH.json" out/
+          ls -l out
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
