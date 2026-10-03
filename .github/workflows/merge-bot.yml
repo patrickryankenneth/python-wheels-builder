@@ -95,6 +95,8 @@ jobs:
         run: |
           set -euo pipefail
           CMP=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA")
+          [ "$(jq .total_commits <<<"$CMP")" -eq "$(jq ".commits | length" <<<"$CMP")" ] \
+            || { echo "::error::compare truncated (too many commits)"; exit 1; }
           jq -e '.status == "ahead" or .status == "identical"' <<<"$CMP" >/dev/null \
             || { echo "::error::PR is not a fast-forward of $BASE_REF"; exit 1; }
           jq -e '[.commits[] | select(.commit.verification.verified != true)] | length == 0' <<<"$CMP" >/dev/null \
@@ -117,6 +119,8 @@ jobs:
           [ -n "${ALLOWED_FPRS// /}" ] || { echo "::error::repo variable ALLOWED_SIGNING_FPRS is empty"; exit 1; }
           ALLOWED=$(tr ' ,' '\n\n' <<<"$ALLOWED_FPRS" | tr a-f A-F | sed '/^$/d')
           CMP=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA")
+          [ "$(jq .total_commits <<<"$CMP")" -eq "$(jq ".commits | length" <<<"$CMP")" ] \
+            || { echo "::error::compare truncated (too many commits)"; exit 1; }
           N=$(jq '.commits | length' <<<"$CMP")
           for i in $(seq 0 $((N - 1))); do
             SHA=$(jq -r ".commits[$i].sha" <<<"$CMP")
