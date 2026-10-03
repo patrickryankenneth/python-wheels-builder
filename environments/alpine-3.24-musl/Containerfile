@@ -11,7 +11,8 @@
 #   - base image: by multi-arch index digest
 #   - rustup-init: exact version, sha256 checked per architecture
 #   - rustc: exact version
-#   - sccache: exact version, --locked
+#   - sccache: exact version, --locked, --no-default-features (local disk cache only),
+#     built with cargo-auditable (exact version, --locked) so scanners read the binary
 #   - maturin: exact version, --require-hashes from requirements-builder.txt
 #   - apk packages: NOT hash-pinnable; the CI workflow diffs the installed
 #     list against the committed apk.lock.<arch> and fails on any change.
@@ -77,7 +78,20 @@ RUN set -eu; \
 
 # sccache: exact version. Cache lives on a bind-mounted host dir at run time.
 ARG SCCACHE_VERSION=0.18.0
-RUN cargo install sccache --version "${SCCACHE_VERSION}" --locked
+ARG CARGO_AUDITABLE_VERSION=0.7.7
+# Local disk cache only: the default feature set pulls in S3/Redis/GCS/etc. and a full
+# network stack that this builder never uses. cargo-auditable embeds the dependency list
+# in the binary so Syft/Trivy scan what was actually compiled. The tool, the crate
+# sources and the registry are removed in the same layer. The guard fails the build if
+# the network stack is back.
+RUN set -eux; \
+    cargo install cargo-auditable --version "${CARGO_AUDITABLE_VERSION}" --locked --root /tmp/auditable; \
+    PATH="/tmp/auditable/bin:${PATH}" \
+        cargo auditable install sccache --version "${SCCACHE_VERSION}" --locked --no-default-features; \
+    rm -rf /tmp/auditable /opt/cargo/registry /opt/cargo/git; \
+    sccache --version | grep -F "${SCCACHE_VERSION}"; \
+    if grep -q -a -e opendal -e reqwest /opt/cargo/bin/sccache; then \
+        echo "sccache contains network backend code" >&2; exit 1; fi
 ENV RUSTC_WRAPPER=/opt/cargo/bin/sccache \
     SCCACHE_DIR=/sccache \
     CARGO_TARGET_DIR=/cargo-target
