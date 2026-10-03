@@ -1,0 +1,190 @@
+name: Auto Fast-Forward on PR
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  checks: read
+
+# One run per PR; a new push cancels the older run (and its pending approval).
+concurrency:
+  group: ff-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ===============================================================
+  # JOB 1: Tests, scans, linters
+  # Add "Run Tests & Security Scans" as a required check in the ruleset.
+  # ===============================================================
+  ci-and-security:
+    name: Run Tests & Security Scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Run Test Suite
+        run: |
+          set -euo pipefail
+          bad=$(grep -rnE '^\s*(-\s*)?uses:\s+[^./]' .github/workflows | grep -vE '@[0-9a-f]{40}' || true)
+          [ -z "$bad" ] || { echo "::error::unpinned actions:"; echo "$bad"; exit 1; }
+          if ls .github/scripts/*.py >/dev/null 2>&1; then python3 -m py_compile .github/scripts/*.py; fi
+          echo "Actions pinned, scripts compile."
+
+  # ===============================================================
+  # JOB 2: PR must be linear and fast-forwardable onto main
+  # Add "Verify Fast-Forward Compatibility" as a required check too.
+  # ===============================================================
+  verify-fast-forward:
+    name: Verify Fast-Forward Compatibility
+    runs-on: ubuntu-latest
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout full history at PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Validate linear history and ancestry
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_REF"
+
+          # 1. No merge commits between main and the PR head
+          MERGES=$(git rev-list --merges "origin/$BASE_REF..$HEAD_SHA")
+          if [ -n "$MERGES" ]; then
+            echo "::error::PR contains merge commits. History must be strictly linear."
+            exit 1
+          fi
+
+          # 2. main must be an ancestor of the PR head (pure fast-forward)
+          if ! git merge-base --is-ancestor "origin/$BASE_REF" "$HEAD_SHA"; then
+            echo "::error::PR is behind '$BASE_REF'. Rebase locally so it can fast-forward."
+            exit 1
+          fi
+
+          echo "PR head $HEAD_SHA is linear and fast-forwardable onto $BASE_REF."
+
+  # ===============================================================
+  # JOB 2b: Gates the bot enforces before it may push
+  # Signed commits, author is the owner, CodeQL green. Runs no PR code.
+  # ===============================================================
+  gates:
+    name: Gates (signatures, author, CodeQL)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE_REF: ${{ github.base_ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      ALLOWED_AUTHOR: patrickryankenneth
+      ALLOWED_NAME: Patrick Ryan
+      ALLOWED_EMAIL: patrickryankenneth@gmail.com
+    steps:
+      - name: Signatures, author, fast-forward
+        run: |
+          set -euo pipefail
+          CMP=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA")
+          jq -e '.status == "ahead" or .status == "identical"' <<<"$CMP" >/dev/null \
+            || { echo "::error::PR is not a fast-forward of $BASE_REF"; exit 1; }
+          jq -e '[.commits[] | select(.commit.verification.verified != true)] | length == 0' <<<"$CMP" >/dev/null \
+            || { echo "::error::unsigned or unverified commit in PR"; exit 1; }
+          jq -e '[.commits[] | select(.commit.verification.reason != "valid")] | length == 0' <<<"$CMP" >/dev/null \
+            || { echo "::error::commit signature reason is not 'valid'"; exit 1; }
+          jq -e --arg a "$ALLOWED_AUTHOR" '[.commits[] | select(.author.login != $a)] | length == 0' <<<"$CMP" >/dev/null \
+            || { echo "::error::commit not authored by $ALLOWED_AUTHOR"; exit 1; }
+          jq -e --arg a "$ALLOWED_AUTHOR" '[.commits[] | select(.committer.login != $a)] | length == 0' <<<"$CMP" >/dev/null \
+            || { echo "::error::commit not committed by $ALLOWED_AUTHOR (web-flow / web UI commit?)"; exit 1; }
+          jq -e --arg n "$ALLOWED_NAME" --arg e "$ALLOWED_EMAIL" '[.commits[] | select(.commit.author.name != $n or .commit.author.email != $e or .commit.committer.name != $n or .commit.committer.email != $e)] | length == 0' <<<"$CMP" >/dev/null \
+            || { echo "::error::author/committer name or email mismatch"; exit 1; }
+          echo "Signatures, author, fast-forward OK."
+
+      - name: Signing key fingerprint allowlist
+        env:
+          ALLOWED_FPRS: ${{ vars.ALLOWED_SIGNING_FPRS }}
+        run: |
+          set -euo pipefail
+          [ -n "${ALLOWED_FPRS// /}" ] || { echo "::error::repo variable ALLOWED_SIGNING_FPRS is empty"; exit 1; }
+          ALLOWED=$(tr ' ,' '\n\n' <<<"$ALLOWED_FPRS" | tr a-f A-F | sed '/^$/d')
+          CMP=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA")
+          N=$(jq '.commits | length' <<<"$CMP")
+          for i in $(seq 0 $((N - 1))); do
+            SHA=$(jq -r ".commits[$i].sha" <<<"$CMP")
+            FPR=$(jq -r ".commits[$i].commit.verification.signature" <<<"$CMP" \
+              | gpg --batch --list-packets 2>&1 \
+              | sed -n 's/.*issuer fpr v4 \([0-9A-Fa-f]\{40\}\).*/\1/p' | head -1 | tr a-f A-F)
+            [ -n "$FPR" ] || { echo "::error::no signing fingerprint found for $SHA"; exit 1; }
+            grep -qxF "$FPR" <<<"$ALLOWED" \
+              || { echo "::error::$SHA signed by unlisted key $FPR"; exit 1; }
+            echo "$SHA signed by allowed key $FPR"
+          done
+
+      - name: Wait for CodeQL checks
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            ok=1
+            for name in "CodeQL" "Analyze (actions)"; do
+              c=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?per_page=100" \
+                --jq "[.check_runs[] | select(.name == \"$name\")] | sort_by(.started_at) | last | .conclusion // \"none\"")
+              echo "$name: $c"
+              if [ "$c" = "none" ] || [ "$c" = "null" ]; then ok=0
+              elif [ "$c" != "success" ]; then echo "::error::$name concluded $c"; exit 1
+              fi
+            done
+            [ "$ok" = 1 ] && { echo "CodeQL checks green."; exit 0; }
+            sleep 30
+          done
+          echo "::error::CodeQL produced no result in 10 min. Check that the CodeQL workflow is enabled."; exit 1
+
+  # ===============================================================
+  # JOB 3: Human approval gate, then fast-forward push via GitHub App
+  # The environment pauses here until you approve. BOT_APP_ID and
+  # BOT_PRIVATE_KEY are ENVIRONMENT secrets on promote-to-main, so they
+  # are only released after approval. The app is the bypass actor in the
+  # main ruleset.
+  # ===============================================================
+  fast-forward-merge:
+    name: Fast-Forward to Main
+    needs: [ci-and-security, verify-fast-forward, gates]
+    # Same-repo branches only (fork heads can't be fetched from origin)
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    environment: promote-to-main
+    env:
+      BASE_REF: ${{ github.base_ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: "Mint short-lived app token (contents write, this repo only)"
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ secrets.BOT_APP_ID }}
+          private-key: ${{ secrets.BOT_PRIVATE_KEY }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+
+      - name: Fast-forward main via API (no checkout, no PR code)
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          STATUS=$(gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA" --jq .status)
+          case "$STATUS" in
+            ahead|identical) ;;
+            *) echo "::error::main moved (compare status: $STATUS). Rebase and re-run."; exit 1 ;;
+          esac
+          # Non-force ref update: rejected unless it is a pure fast-forward. Same SHA, signatures kept.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/heads/$BASE_REF" \
+            -f sha="$HEAD_SHA" -F force=false --jq '.object.sha'
+          echo "Fast-forwarded $BASE_REF to $HEAD_SHA."
