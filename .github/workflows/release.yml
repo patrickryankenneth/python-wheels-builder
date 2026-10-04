@@ -52,9 +52,9 @@ jobs:
         run: |
           set -euo pipefail
           id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-environment-image.yml \
-            --commit "$GITHUB_SHA" --status success --event push \
-            --json databaseId,headBranch \
-            --jq '[.[] | select(.headBranch == "main")] | .[0].databaseId // empty')"
+            --commit "$GITHUB_SHA" --status success \
+            --json databaseId,headBranch,event \
+            --jq '[.[] | select(.headBranch == "main" and (.event == "push" or .event == "workflow_dispatch"))] | .[0].databaseId // empty')"
           if [ -z "$id" ]; then
             echo "::error::no successful build-environment-image run on main for $GITHUB_SHA. Tag the commit that built the image."
             exit 1
