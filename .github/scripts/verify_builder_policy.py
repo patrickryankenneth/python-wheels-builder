@@ -20,6 +20,8 @@ it holds one `sbom-<arch>/` directory per architecture containing
   --tag / --tag-sha  the release tag and the commit it must point at
 """
 import argparse
+import gzip
+import hashlib
 import json
 import re
 import subprocess
@@ -35,7 +37,8 @@ USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?([^\s'\"#]+)")
 
 class Ctx:
     def __init__(self, *, root, tag, tag_sha, inputs, digests, sboms, vex,
-                 spdx=None, assets=None, run=None, git_show=None):
+                 spdx=None, assets=None, run=None, git_show=None,
+                 asserts=None, artifacts_dir=None):
         self.root = Path(root)
         self.tag = tag
         self.tag_sha = tag_sha
@@ -45,6 +48,8 @@ class Ctx:
         self.spdx = spdx or {}    # arch -> parsed SPDX SBOM (must agree with CycloneDX)
         self.vex = vex            # parsed OpenVEX
         self.assets = assets      # list[str] | None
+        self.asserts = asserts or {}   # arch -> parsed assert-image.<arch>.json
+        self.artifacts_dir = Path(artifacts_dir) if artifacts_dir else None
         self.run = run or _run
         self.git_show = git_show or _git_show(self.root, tag_sha, self.run)
 
@@ -99,6 +104,13 @@ def purl_set(sbom):
 
 def cargo_pairs(sbom):
     return {(n, v) for t, n, v in purl_set(sbom) if t == "cargo"}
+
+
+def artifact_path(ctx, arch, name):
+    """Path of a file in the sbom-<arch>/ artifact directory, or None if no directory was given."""
+    if ctx.artifacts_dir is None:
+        return None
+    return ctx.artifacts_dir / f"sbom-{arch}" / name
 
 
 def _per_arch(ctx, getter, label):
@@ -222,6 +234,88 @@ def check_vex_attested(ctx, params):
         d = _digest_ok(ctx, a, errs)
         if d:
             _predicate_equals(ctx, a, d, params, params["predicate_type"], sref, ctx.vex, "builder.openvex.json", errs)
+    return errs
+
+
+def check_assert_image_passed(ctx, params):
+    """assert-image.<arch>.json (written by release.yml from assert-image.sh) names this image
+    digest, the tagged commit and the released CycloneDX SBOM, lists exactly the required checks,
+    and every check is PASS."""
+    want = list(params["required_checks"])
+    if not want:
+        return ["policy required_checks is empty"]
+    errs = []
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        doc = ctx.asserts.get(a)
+        if not isinstance(doc, dict):
+            errs.append(f"{a}: assert-image.{a}.json missing")
+            continue
+        if d and doc.get("image") != f"{params['image']}@{d}":
+            errs.append(f"{a}: assert-image image {doc.get('image')!r} != {params['image']}@{d}")
+        if doc.get("commit") != ctx.tag_sha:
+            errs.append(f"{a}: assert-image commit {doc.get('commit')!r} != tag commit {ctx.tag_sha}")
+        p = artifact_path(ctx, a, f"sbom.{a}.cdx.json")
+        if p is None or not p.exists():
+            errs.append(f"{a}: released CycloneDX SBOM not found, cannot compare sbom_sha256")
+        elif doc.get("sbom_sha256") != hashlib.sha256(p.read_bytes()).hexdigest():
+            errs.append(f"{a}: assert-image sbom_sha256 does not match the released CycloneDX SBOM")
+        checks = doc.get("checks")
+        if not (isinstance(checks, list) and all(isinstance(c, dict) for c in checks)):
+            errs.append(f"{a}: assert-image checks is not a list of objects")
+            continue
+        names = [str(c.get("name")) for c in checks]
+        if sorted(names) != sorted(want):
+            errs.append(f"{a}: assert-image checks differ from the policy list: "
+                        f"missing {sorted(set(want) - set(names))}, unexpected {sorted(set(names) - set(want))}")
+        for c in checks:
+            if c.get("result") != "PASS":
+                errs.append(f"{a}: assert-image check {c.get('name')!r} result {c.get('result')!r}")
+    return errs
+
+
+def check_assert_attested(ctx, params):
+    """assert-image.<arch>.json is the predicate of a verified attestation on the image digest,
+    made by the release workflow from the release tag."""
+    errs = []
+    sref = params["source_ref_template"].format(tag=ctx.tag)
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        if d:
+            _predicate_equals(ctx, a, d, params, params["predicate_type"], sref,
+                              ctx.asserts.get(a), f"assert-image.{a}.json", errs)
+    return errs
+
+
+def check_build_log_attested(ctx, params):
+    """build-log.<arch>.txt.gz is a non-empty gzip that mentions the image digest, and the file
+    itself has a verified attestation from the build workflow, from main, at the tagged commit."""
+    errs = []
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        p = artifact_path(ctx, a, f"build-log.{a}.txt.gz")
+        if p is None or not p.exists():
+            errs.append(f"{a}: build-log.{a}.txt.gz missing")
+            continue
+        try:
+            with gzip.open(p, "rt", errors="replace") as fh:
+                text = fh.read()
+        except (OSError, EOFError) as e:
+            errs.append(f"{a}: build log is not a readable gzip: {e}")
+            continue
+        if not text.strip():
+            errs.append(f"{a}: build log is empty")
+        elif d and d not in text:
+            errs.append(f"{a}: build log does not mention image digest {d}")
+        rc, _ = ctx.run([
+            "gh", "attestation", "verify", str(p),
+            "--repo", params["repo"],
+            "--signer-workflow", params["signer_workflow"],
+            "--source-ref", params["source_ref"],
+            "--source-digest", ctx.tag_sha,
+        ])
+        if rc != 0:
+            errs.append(f"{a}: gh attestation verify failed for build-log.{a}.txt.gz")
     return errs
 
 
@@ -462,10 +556,13 @@ def load_ctx(a):
     cdx = {x: jload(f(x, f"sbom.{x}.cdx.json")) for x in ARCHES}
     spdx = {x: jload(f(x, f"sbom.{x}.spdx.json")) for x in ARCHES}
     assets = a.assets_file.read_text().split() if a.assets_file else None
+    asserts = {x: jload(f(x, f"assert-image.{x}.json")) for x in ARCHES}
     return Ctx(root=a.root, tag=a.tag, tag_sha=a.tag_sha, inputs=inputs, digests=digests,
                sboms={k: v for k, v in cdx.items() if v is not None},
                spdx={k: v for k, v in spdx.items() if v is not None},
-               vex=jload(a.vex), assets=assets)
+               vex=jload(a.vex), assets=assets,
+               asserts={k: v for k, v in asserts.items() if v is not None},
+               artifacts_dir=a.artifacts_dir)
 
 
 def main():

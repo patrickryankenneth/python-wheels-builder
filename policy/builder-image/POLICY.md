@@ -1,4 +1,4 @@
-# Policy builder-image v2
+# Policy builder-image v2.1
 
 <!-- Generated from policy.json by policy_tool.py render-md. Do not edit. -->
 
@@ -195,6 +195,10 @@ Parameters:
 ```json
 {
   "expected_assets": [
+    "assert-image.aarch64.json",
+    "assert-image.x86_64.json",
+    "build-log.aarch64.txt.gz",
+    "build-log.x86_64.txt.gz",
     "builder-inputs.aarch64.json",
     "builder-inputs.x86_64.json",
     "builder.openvex.json",
@@ -317,6 +321,72 @@ Toolchain archives are trusted through rustup's own verification. They are not i
 
 Crate tarballs are trusted through the registry's checksums and the locked dependency graph. They are not independently pinned by hash.
 
+### IMG-15 - Image assertions ran and passed
+
+- Status: `enforced`
+- Check: `check_assert_image_passed`
+- Implemented by: release.yml runs .github/scripts/assert-image.sh on each image digest before attesting and records the results in assert-image.<arch>.json; verify_builder_policy.py
+
+For both architectures, assert-image.<arch>.json names this image digest, the tagged commit and the sha256 of the released CycloneDX SBOM, lists exactly the required checks, and every check is PASS. The checks are the ones assert-image.sh runs against the image and its SBOM, including the facts the VEX statements rely on.
+
+Parameters:
+
+```json
+{
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "required_checks": [
+    "control: sccache binary exists in image",
+    "no sccache-dist binary",
+    "control: SBOM has >=100 cargo components",
+    "no network-stack crates in SBOM",
+    "pinned tar@0.4.40 present",
+    "pinned bytes@1.10.1 present",
+    "pinned rand@0.8.5 present",
+    "SCCACHE_MAX_FRAME_LENGTH set in image",
+    "server seen on loopback; no other listeners"
+  ]
+}
+```
+
+### IMG-16 - Image assertion results are attested
+
+- Status: `enforced`
+- Check: `check_assert_attested`
+- Implemented by: release.yml (actions/attest, custom predicate on the image digest); verify_builder_policy.py
+
+For both architectures, the image digest has a GitHub attestation of the assert-image predicate type, produced by the named workflow from the release tag at exactly the commit the tag points to, and its predicate is identical to the released assert-image.<arch>.json. This shows which workflow and commit produced the results, not that the checks are sufficient.
+
+Parameters:
+
+```json
+{
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "predicate_type": "https://github.com/patrickryankenneth/python-wheels-builder/predicate/assert-image/v1",
+  "repo": "patrickryankenneth/python-wheels-builder",
+  "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/release.yml",
+  "source_ref_template": "refs/tags/{tag}"
+}
+```
+
+### IMG-17 - Build log is attested
+
+- Status: `enforced`
+- Check: `check_build_log_attested`
+- Implemented by: build-environment-image.yml (build log, actions/attest with the log file as subject); verify_builder_policy.py
+
+For both architectures, the release carries build-log.<arch>.txt.gz, a non-empty gzip that mentions the image digest, and the file itself has a GitHub attestation from the named workflow, from refs/heads/main, at exactly the commit the release tag points to. The log is what the build workflow printed; it lets the build be inspected after Actions logs expire.
+
+Parameters:
+
+```json
+{
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "repo": "patrickryankenneth/python-wheels-builder",
+  "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/build-environment-image.yml",
+  "source_ref": "refs/heads/main"
+}
+```
+
 ## Not guaranteed
 
 - The image is not reproducible, and apk packages, rustup archives and crate tarballs have no content-hash pins.
@@ -329,3 +399,5 @@ Crate tarballs are trusted through the registry's checksums and the locked depen
 - The number of cargo components is recorded in the SBOM and deliberately not a rule.
 - builder-inputs.json is attested (IMG-12) as produced by the build workflow, but it is the workflow's own record of what ran. The unpinned inputs it records (runner, APK packages, rustup archives, crate tarballs) are recorded, not verified.
 - The SBOMs and the VEX are attested (IMG-13, IMG-14) as produced by release.yml at the release tag. That shows who produced them, not that they are correct: the SBOMs record what Syft found in the image, and the VEX remains the maintainer's assertion.
+- The assert-image results show that the listed checks passed on the image and its SBOM at release time. They check those properties only and are not a security review of the image.
+- The build log is the build workflow's own output, attested as produced by that workflow. It is evidence for later inspection, not an independent record, and it is not a complete log of the release workflow run.

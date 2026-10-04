@@ -6,7 +6,8 @@ name: release-image
 #   gate     require a successful build-environment-image run on main for exactly this commit
 #   attest   per arch: verify the build provenance, generate SBOMs with pinned Syft, run
 #            assert-image.sh against the image and its SBOM (the facts the VEX relies on), and attest
-#            the CycloneDX SBOM, the SPDX SBOM and the VEX on the image digest (signer: this workflow)
+#            the CycloneDX SBOM, the SPDX SBOM, the VEX and the assertion results on the image digest
+#            (signer: this workflow). The build log from the build run travels with them.
 #   release  load the published builder policy, check its sha256 against the value committed
 #            below, run verify_builder_policy.py (one check per enforced rule), and only then
 #            create a DRAFT release. It never publishes: the maintainer reviews and publishes.
@@ -30,10 +31,11 @@ env:
   SYFT_VERSION: "1.54.0"
   VEX_PATH: environments/alpine-3.24-musl/vex/builder.openvex.json
   VEX_PREDICATE_TYPE: https://openvex.dev/ns/v0.2.0
-  POLICY_TAG: policy-builder-image-v2
+  ASSERT_PREDICATE_TYPE: https://github.com/patrickryankenneth/python-wheels-builder/predicate/assert-image/v1
+  POLICY_TAG: policy-builder-image-v2.1
   # sha256 of policy/builder-image/policy.json. Update this whenever the policy changes
   # (tests/test_verify_builder_policy.py fails if it drifts).
-  POLICY_SHA256: cef4bd0d2d8196e6214f25d2f82cfc6f2a78339ceb267c5674fdabcdba2ee25e
+  POLICY_SHA256: a9d65504d7ebe4bc83269b6d4880877f04aa24e8810d670b580f21f7b4a8e29b
 
 jobs:
   gate:
@@ -142,7 +144,7 @@ jobs:
           "$RUNNER_TEMP/syft/syft" "registry:$IMAGE@$D" \
             -o "spdx-json=out/sbom.$ARCH.spdx.json" \
             -o "cyclonedx-json=out/sbom.$ARCH.cdx.json"
-          cp "digests/image.digest.$ARCH" "digests/builder-inputs.$ARCH.json" out/
+          cp "digests/image.digest.$ARCH" "digests/builder-inputs.$ARCH.json" "digests/build-log.$ARCH.txt.gz" out/
           # actions/attest rejects SBOMs and predicates over 16 MiB; fail here with a clear message.
           for f in "out/sbom.$ARCH.spdx.json" "out/sbom.$ARCH.cdx.json" "$VEX_PATH"; do
             [ "$(stat -c %s "$f")" -lt 16777216 ] || { echo "::error::$f is 16 MiB or larger; cannot be attested"; exit 1; }
@@ -153,7 +155,21 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          .github/scripts/assert-image.sh "$IMAGE@$D" "out/sbom.$ARCH.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          .github/scripts/assert-image.sh "$IMAGE@$D" "out/sbom.$ARCH.cdx.json" | tee assert.out | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 - "$IMAGE@$D" "out/sbom.$ARCH.cdx.json" "$GITHUB_SHA" "out/assert-image.$ARCH.json" <<'PY'
+          import hashlib, json, re, sys
+          image, sbom, commit, dest = sys.argv[1:5]
+          checks = []
+          for line in open("assert.out", encoding="utf-8"):
+              m = re.match(r"^(PASS|FAIL)  (.*\S)\s*$", line)
+              if m:
+                  checks.append({"name": m.group(2), "result": m.group(1)})
+          doc = {"image": image, "commit": commit, "checks": checks,
+                 "sbom_sha256": hashlib.sha256(open(sbom, "rb").read()).hexdigest()}
+          with open(dest, "w") as fh:
+              json.dump(doc, fh, indent=2, sort_keys=True)
+          PY
+          cat "out/assert-image.$ARCH.json"
 
       - name: Attest CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -178,6 +194,15 @@ jobs:
           subject-digest: ${{ env.D }}
           predicate-type: ${{ env.VEX_PREDICATE_TYPE }}
           predicate-path: ${{ env.VEX_PATH }}
+          push-to-registry: true
+
+      - name: Attest image assertion results
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.D }}
+          predicate-type: ${{ env.ASSERT_PREDICATE_TYPE }}
+          predicate-path: out/assert-image.${{ matrix.arch }}.json
           push-to-registry: true
 
       - name: Upload SBOMs, digest and inputs
@@ -232,7 +257,7 @@ jobs:
           set -euo pipefail
           mkdir -p release-assets
           for a in x86_64 aarch64; do
-            for f in "builder-inputs.$a.json" "image.digest.$a" "sbom.$a.cdx.json" "sbom.$a.spdx.json"; do
+            for f in "builder-inputs.$a.json" "image.digest.$a" "sbom.$a.cdx.json" "sbom.$a.spdx.json" "assert-image.$a.json" "build-log.$a.txt.gz"; do
               cp "artifacts/sbom-$a/$f" release-assets/
             done
           done

@@ -49,4 +49,4 @@ def test_schema1_rejected():
 
 
 def test_tag_name():
-    assert f"policy-{POLICY['scope']}-{POLICY['policy_version']}" == "policy-builder-image-v2"
+    assert f"policy-{POLICY['scope']}-{POLICY['policy_version']}" == "policy-builder-image-v2.1"

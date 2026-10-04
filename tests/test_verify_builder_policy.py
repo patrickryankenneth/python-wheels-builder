@@ -1,4 +1,4 @@
-import copy, hashlib, importlib.util, json
+import copy, gzip, hashlib, importlib.util, json
 from pathlib import Path
 import pytest
 
@@ -75,11 +75,24 @@ def good(tmp_path, run=None):
         run.by_key[(digs[a], t13["cyclonedx_predicate_type"])] = copy.deepcopy(cdx[a])
         run.by_key[(digs[a], t13["spdx_predicate_type_prefix"] + "2.3")] = copy.deepcopy(spdx[a])
         run.by_key[(digs[a], t14)] = copy.deepcopy(vex)
+    # release-run artifacts: sbom-<arch>/ holds the SBOM and the build log; the assert results
+    # (IMG-15) are checked against both and attested (IMG-16)
+    img, asserts = P("IMG-15")["image"], {}
+    for a in v.ARCHES:
+        d = tmp_path / f"sbom-{a}"; d.mkdir()
+        raw = json.dumps(cdx[a]).encode()
+        (d / f"sbom.{a}.cdx.json").write_bytes(raw)
+        with gzip.open(d / f"build-log.{a}.txt.gz", "wt") as fh:
+            fh.write(f"building\npushed {img}@{digs[a]}\n")
+        asserts[a] = {"image": f"{img}@{digs[a]}", "commit": SHA, "sbom_sha256": hashlib.sha256(raw).hexdigest(),
+                      "checks": [{"name": n, "result": "PASS"} for n in P("IMG-15")["required_checks"]]}
+        run.by_key[(digs[a], P("IMG-16")["predicate_type"])] = copy.deepcopy(asserts[a])
     return v.Ctx(root=tmp_path, tag="v1", tag_sha=SHA,
                  inputs=ins, digests=digs,
                  sboms=cdx, spdx=spdx, vex=vex,
                  assets=list(P("IMG-10")["expected_assets"]),
-                 run=run, git_show=fake_show)
+                 run=run, git_show=fake_show,
+                 asserts=asserts, artifacts_dir=tmp_path)
 
 
 def test_every_rule_has_a_check_and_a_bad_fixture():
@@ -128,6 +141,27 @@ def b_sb_nospdx(c): del c.spdx["aarch64"]
 def b_vx_mismatch(c): c.run.by_key[K(c, "x86_64", P("IMG-14")["predicate_type"])]["statements"][0]["status"] = "not_affected"
 def b_vx_none(c): c.run.by_key.pop(K(c, "aarch64", P("IMG-14")["predicate_type"]))
 def b_vx_ctx(c): c.vex = None
+T16 = lambda: P("IMG-16")["predicate_type"]
+def LOG(c, a): return c.artifacts_dir / f"sbom-{a}" / f"build-log.{a}.txt.gz"
+def b_as_fail(c): c.asserts["x86_64"]["checks"][0]["result"] = "FAIL"
+def b_as_dropped(c): c.asserts["aarch64"]["checks"].pop()
+def b_as_extra(c): c.asserts["aarch64"]["checks"].append({"name": "extra", "result": "PASS"})
+def b_as_sbom(c): c.asserts["x86_64"]["sbom_sha256"] = "0" * 64
+def b_as_commit(c): c.asserts["aarch64"]["commit"] = "d" * 40
+def b_as_image(c): c.asserts["x86_64"]["image"] = P("IMG-15")["image"] + "@sha256:" + "9" * 64
+def b_as_none(c): del c.asserts["aarch64"]
+def b_as_swapped(c): c.asserts["x86_64"], c.asserts["aarch64"] = c.asserts["aarch64"], c.asserts["x86_64"]
+def b_at_mismatch(c): c.run.by_key[K(c, "aarch64", T16())]["checks"][0]["result"] = "FAIL"
+def b_at_none(c): c.run.by_key.pop(K(c, "x86_64", T16()))
+def b_at_swapped(c):
+    m, x, a = c.run.by_key, K(c, "x86_64", T16()), K(c, "aarch64", T16())
+    m[x], m[a] = m[a], m[x]
+def b_lg_missing(c): LOG(c, "x86_64").unlink()
+def b_lg_empty(c):
+    with gzip.open(LOG(c, "x86_64"), "wt") as fh: fh.write("")
+def b_lg_nodigest(c):
+    with gzip.open(LOG(c, "aarch64"), "wt") as fh: fh.write("built, but no digest recorded\n")
+def b_lg_notgzip(c): LOG(c, "x86_64").write_bytes(b"not gzip")
 
 BAD = {"check_image_attested": [b_attest, b_commit],
        "check_inputs_attested": [b_attest, b_ia_mismatch, b_ia_none, b_ia_nodigest, b_ia_swapped],
@@ -135,7 +169,10 @@ BAD = {"check_image_attested": [b_attest, b_commit],
        "check_vex_attested": [b_attest, b_ia_nodigest, b_vx_mismatch, b_vx_none, b_vx_ctx], "check_gate_script_hash": [b_gate],
        "check_pinned_crates": [b_pins], "check_no_network_crates": [b_net], "check_zero_deb": [b_deb],
        "check_inputs_recorded": [b_inputs], "check_base_image_pinned": [b_base, b_base2, b_base3, b_base4], "check_sbom_and_vex": [b_vex, b_spdx, b_nospdx],
-       "check_tag_signed": [b_tag, b_tag_unverified, b_tagger], "check_actions_pinned": [b_pin], "check_release_assets": [b_assets]}
+       "check_tag_signed": [b_tag, b_tag_unverified, b_tagger], "check_actions_pinned": [b_pin], "check_release_assets": [b_assets],
+       "check_assert_image_passed": [b_as_fail, b_as_dropped, b_as_extra, b_as_sbom, b_as_commit, b_as_image, b_as_none, b_as_swapped, b_ia_nodigest],
+       "check_assert_attested": [b_attest, b_ia_nodigest, b_as_none, b_at_mismatch, b_at_none, b_at_swapped],
+       "check_build_log_attested": [b_attest, b_ia_nodigest, b_lg_missing, b_lg_empty, b_lg_nodigest, b_lg_notgzip]}
 
 
 @pytest.mark.parametrize("check,mutator", [(k, m) for k, ms in BAD.items() for m in ms])
@@ -208,3 +245,44 @@ def test_release_workflow_matches_policy():
 def test_repo_workflows_are_pinned():
     import types
     assert v.check_actions_pinned(types.SimpleNamespace(root=ROOT), {}) == []
+
+def test_assert_attestation_uses_tag_ref_and_release_workflow(tmp_path):
+    run = FakeRun(); c = good(tmp_path, run)
+    assert v.check_assert_attested(c, P("IMG-16")) == []
+    calls = [x for x in run.calls if "--predicate-type" in x and x[x.index("--predicate-type") + 1] == T16()]
+    assert len(calls) == 2
+    for argv in calls:
+        assert argv[argv.index("--source-ref") + 1] == "refs/tags/v1"
+        assert argv[argv.index("--source-digest") + 1] == SHA
+        assert argv[argv.index("--signer-workflow") + 1].endswith("/.github/workflows/release.yml")
+
+
+def test_build_log_attestation_pins_build_workflow_main_and_tag_sha(tmp_path):
+    run = FakeRun(); c = good(tmp_path, run)
+    assert v.check_build_log_attested(c, P("IMG-17")) == []
+    calls = [x for x in run.calls if x[:3] == ["gh", "attestation", "verify"] and x[3].endswith(".txt.gz")]
+    assert len(calls) == 2
+    for argv in calls:
+        assert argv[argv.index("--source-ref") + 1] == "refs/heads/main"
+        assert argv[argv.index("--source-digest") + 1] == SHA
+        assert argv[argv.index("--signer-workflow") + 1].endswith("/.github/workflows/build-environment-image.yml")
+
+
+def test_assert_image_script_checks_match_policy():
+    import re
+    text = (ROOT / ".github/scripts/assert-image.sh").read_text()
+    assert sorted(re.findall(r'^check "([^"]+)"', text, re.M)) == sorted(P("IMG-15")["required_checks"])
+
+
+def test_release_workflow_runs_assert_image_and_attests_the_results():
+    wf = (ROOT / ".github/workflows/release.yml").read_text()
+    assert ".github/scripts/assert-image.sh" in wf
+    assert P("IMG-16")["predicate_type"] in wf
+    assert "predicate-path: out/assert-image.${{ matrix.arch }}.json" in wf
+    assert wf.index("assert-image.sh") < wf.index("Attest CycloneDX SBOM")
+
+
+def test_build_workflow_attests_the_build_log():
+    wf = (ROOT / ".github/workflows/build-environment-image.yml").read_text()
+    assert "subject-path: build-log.${{ matrix.arch }}.txt.gz" in wf
+    assert "build-log.${{ matrix.arch }}.txt.gz" in wf.split("Upload digest, inputs and build log")[1]

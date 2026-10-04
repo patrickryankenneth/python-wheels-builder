@@ -29,7 +29,7 @@ import shutil
 import sys
 from pathlib import Path
 
-ENFORCED_VERSION_RE = re.compile(r"^v[1-9][0-9]*$")
+ENFORCED_VERSION_RE = re.compile(r"^v[1-9][0-9]*(\.[0-9]+)?$")
 RULE_ID_RE = re.compile(r"^[A-Z]{3,4}-[0-9]+$")
 CHECK_RE = re.compile(r"^check_[a-z0-9_]+$")
 SCOPE_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -92,7 +92,7 @@ def validate_v2(obj, verifier: Path | None) -> list[str]:
         errs.append("schema 2 policies must have enforcement_mode 'enforced'")
     ver = obj["policy_version"]
     if not (isinstance(ver, str) and ENFORCED_VERSION_RE.match(ver)):
-        errs.append("policy_version must look like v1, v2, ...")
+        errs.append("policy_version must look like v1, v2, v2.1, ...")
     if not _nonempty(obj["summary"]):
         errs.append("summary must be a non-empty string")
     if not (isinstance(obj["not_guaranteed"], list) and obj["not_guaranteed"]

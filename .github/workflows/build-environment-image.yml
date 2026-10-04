@@ -56,11 +56,13 @@ jobs:
       - name: Build (local, not pushed yet)
         env:
           TAG: ${{ steps.tag.outputs.tag }}
+          ARCH: ${{ matrix.arch }}
         run: |
-          docker buildx build --load \
+          set -euo pipefail
+          docker buildx build --load --progress=plain \
             -f "$CONTEXT/Containerfile" \
             -t "$IMAGE:$TAG" \
-            "$CONTEXT"
+            "$CONTEXT" 2>&1 | tee "build.$ARCH.log"
 
       - name: Check apk package list against committed lock (exact match)
         env:
@@ -84,6 +86,7 @@ jobs:
             echo "::error::Installed apk packages differ from $LOCK. If the change is intended, commit the new list."
             exit 1
           fi
+          echo "apk package list matches $LOCK" | tee -a "build.$TAG.log"
 
       - name: Upload apk list (for first-time lock or review)
         if: always()
@@ -98,10 +101,12 @@ jobs:
         env:
           REF: ${{ steps.tag.outputs.tag }}
         run: |
-          docker push "$IMAGE:$REF"
+          set -euo pipefail
+          docker push "$IMAGE:$REF" 2>&1 | tee -a "build.${{ matrix.arch }}.log"
           DIGEST="$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$REF" | cut -d@ -f2)"
           case "$DIGEST" in sha256:????????????????????????????????????????????????????????????????) ;; *) echo "::error::bad digest: $DIGEST"; exit 1;; esac
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "pushed $IMAGE@$DIGEST" | tee -a "build.${{ matrix.arch }}.log"
           echo "$DIGEST" > "image.digest.${{ matrix.arch }}"
           echo "### ${{ matrix.arch }} builder digest" >> "$GITHUB_STEP_SUMMARY"
           echo "\`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
@@ -200,10 +205,35 @@ jobs:
             | jq -e --slurpfile want "builder-inputs.$ARCH.json" \
                 'any(.[]; .verificationResult.statement.predicate == $want[0])' > /dev/null
 
-      - name: Upload digest and inputs
+      - name: Package build log
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          [ -s "build.$ARCH.log" ] || { echo "::error::build log is empty"; exit 1; }
+          gzip -9 -n -c "build.$ARCH.log" > "build-log.$ARCH.txt.gz"
+          ls -l "build-log.$ARCH.txt.gz"
+
+      - name: Attest build log
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: build-log.${{ matrix.arch }}.txt.gz
+
+      - name: Verify the build-log attestation we just made
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "build-log.$ARCH.txt.gz" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/build-environment-image.yml"
+
+      - name: Upload digest, inputs and build log
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: image-digest-${{ matrix.arch }}
           path: |
             image.digest.${{ matrix.arch }}
             builder-inputs.${{ matrix.arch }}.json
+            build-log.${{ matrix.arch }}.txt.gz
