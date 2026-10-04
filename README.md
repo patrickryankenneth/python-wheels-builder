@@ -1,5 +1,3 @@
-
-```markdown
 # python-wheels-builder
 
 A zero-trust, SLSA-aligned reference architecture for compiling deterministic, cryptographically attested Python wheels for hardened and air-gapped environments.
@@ -10,7 +8,7 @@ A zero-trust, SLSA-aligned reference architecture for compiling deterministic, c
 
 ---
 
-## 🎯 Threat Model & Motivation
+## Threat Model & Motivation
 
 Standard Python packaging workflows often rely on implicit trust: pulling unverified binary wheels or compiling natively inside unhardened runners with full internet access and mutable action tags. In regulated domains (defense, financial systems, healthcare, and critical infrastructure), this creates critical supply-chain exposure:
 
@@ -22,9 +20,9 @@ This repository enforces **deterministic immutability, least-privilege tool comp
 
 ---
 
-## 🛡️ Architecture & Security Controls
+## Architecture & Security Controls
 
-```
+```text
                         ┌────────────────────────────────────────┐
                         │   Developer Workstation (Signed GPG)   │
                         └──────────────────┬─────────────────────┘
@@ -34,20 +32,20 @@ This repository enforces **deterministic immutability, least-privilege tool comp
 │ GitHub Actions: Zero-Trust Isolation                                                  │
 │                                                                                        │
 │  [Job: Gates] (No code checkout)                                                       │
-│   ├── Parse OpenPGP signature packets (`issuer fpr v4` allowlist)                      │
+│   ├── Parse OpenPGP signature packets (issuer fpr v4 allowlist)                        │
 │   └── Compare API ancestor & linear history enforcement                                │
 │                                                                                        │
 │  [Job: Hermetic Container Build]                                                       │
 │   ├── Multi-arch Alpine musl (x86_64 / aarch64) pinned to content-addressable digests  │
-│   ├── sccache built with `--no-default-features` (local disk cache only, 0 network)   │
-│   ├── Embedded dependency tracking via `cargo-auditable`                               │
+│   ├── sccache built with --no-default-features (local disk cache only, 0 network)      │
+│   ├── Embedded dependency tracking via cargo-auditable                                 │
 │   └── Build-time assertion gate with automated mutation testing                       │
 │                                                                                        │
 │  [Job: Policy Verification & Cryptographic Attestation]                                │
 │   ├── Syft SBOM generation (CycloneDX / SPDX)                                          │
 │   ├── OpenVEX exploitability documentation matching exact pinned crate hashes          │
-│   ├── GitHub OIDC / Sigstore Keyless Attestation (`actions/attest`)                     │
-│   └── Machine-verifiable Policy Check (`IMG-1` through `IMG-11`)                       │
+│   ├── GitHub OIDC / Sigstore Keyless Attestation (actions/attest)                      │
+│   └── Machine-verifiable Policy Check (IMG-1 through IMG-11)                           │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,7 +67,7 @@ Releases are governed by a machine-verifiable policy schema (`policy.json`) eval
 
 ---
 
-## 🔍 Verifying Release Artifacts
+## Verifying Release Artifacts
 
 Every published builder container and release asset includes a Sigstore cryptographic attestation linked to this repository's OIDC workflow identity.
 
@@ -92,7 +90,7 @@ python3 .github/scripts/verify_builder_policy.py \
 
 ---
 
-## 🧪 Running the Test Suite
+## Running the Test Suite
 
 ### Unit & Gate Mutation Tests (Fast)
 ```bash
@@ -106,7 +104,7 @@ pytest tests -q --integration
 
 ---
 
-## 📜 Compliance & Standards Alignment
+## Compliance & Standards Alignment
 
 This project is built as an educational and operational reference for:
 * **NIST SP 800-218:** Secure Software Development Framework (SSDF)
@@ -115,6 +113,6 @@ This project is built as an educational and operational reference for:
 
 ---
 
-## 👤 Maintainer
+## Maintainer
 
-**Patrick Ryan**  
+**Patrick Ryan**
