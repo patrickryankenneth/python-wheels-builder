@@ -18,6 +18,7 @@ name: release-image
 # Dry run: `gh workflow run release.yml --ref <tag>` (workflow_dispatch on a tag ref). It does
 # everything above, using the policy.json in the tagged commit instead of the published release,
 # and creates no release. The sha256 check still applies.
+# The attest steps still run, so a dry run pushes real attestations to the image in the registry.
 
 on:
   push:
@@ -280,7 +281,7 @@ jobs:
           set -euo pipefail
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
             --title "Builder image $GITHUB_REF_NAME" \
-            --notes "Draft. Verified against policy ${POLICY_TAG} (policy.json sha256 ${POLICY_SHA256}) by release.yml. Verify the image: gh attestation verify oci://${IMAGE}@<digest from image.digest.<arch>> --repo ${GITHUB_REPOSITORY} --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-environment-image.yml, and with --predicate-type for the SBOM and VEX attestations signed by release.yml."
+            --notes "Verified against policy ${POLICY_TAG} (policy.json sha256 ${POLICY_SHA256}) by release.yml. Verify the image: gh attestation verify oci://${IMAGE}@DIGEST --repo ${GITHUB_REPOSITORY} --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-environment-image.yml (DIGEST is the value in the image.digest.ARCH asset; ARCH is x86_64 or aarch64), and with --predicate-type for the SBOM and VEX attestations signed by release.yml."
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" release-assets/*
           got="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort | .[]')"
           [ "$got" = "$(cat assets.txt)" ] || { echo "::error::draft asset set differs from the verified set"; exit 1; }

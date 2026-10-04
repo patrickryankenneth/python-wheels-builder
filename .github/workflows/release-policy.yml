@@ -5,7 +5,7 @@ name: release-policy
 #
 # Trust model (who vouches for what):
 #   commit   GPG-signed by the author            -> who wrote the policy
-#   tag      gitsign (Sigstore OIDC) annotated   -> who approved this exact commit as a release
+#   tag      GPG-signed annotated, Verified by GitHub -> who approved this exact commit as a release
 #   build    this workflow + GitHub attestation  -> these bytes were produced by this workflow
 #   release  SHA256SUMS.sigstore.json, keyless cosign signed ON THE MAINTAINER'S
 #            WORKSTATION (sign-release.sh) -> a human approved these exact bytes
@@ -15,9 +15,8 @@ name: release-policy
 # publishes by hand (immutable releases: nothing can be swapped afterwards).
 #
 # Manual only, from main, behind the `policy-release` environment.
-# Enforced (vN) policies need a pre-existing gitsign-signed annotated tag
-# `policy-builder-image-vN` pointing at the build SHA, verified here against the identity
-# pinned in repository variables POLICY_SIGNER_IDENTITY / POLICY_SIGNER_ISSUER.
+# Enforced (vN) policies need a pre-existing GPG-signed annotated tag
+# `policy-builder-image-vN` pointing at the build SHA, and GitHub must report it as Verified.
 # Descriptive (legacy-*) policies need no tag and carry no provenance
 # attestation, so they cannot be mistaken for an enforcement contract.
 
@@ -45,9 +44,6 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       WANT: ${{ inputs.policy_version }}
-      SIGNER_IDENTITY: ${{ vars.POLICY_SIGNER_IDENTITY }}
-      SIGNER_ISSUER: ${{ vars.POLICY_SIGNER_ISSUER }}
-      GITSIGN_REF: dd51a25b4f9fa103ca6f5cdca4183fa15cb3e627 # v0.14.0
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -100,7 +96,7 @@ jobs:
           tag="$TAG"
           git fetch --force --tags origin
           if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-            echo "::error::tag ${tag} not found - create it locally with your gitsign tag alias and push it first"
+            echo "::error::tag ${tag} not found - create a GPG-signed annotated tag locally (git tag -s) and push it first"
             exit 1
           fi
           if [ "$(git cat-file -t "refs/tags/${tag}")" != "tag" ]; then
