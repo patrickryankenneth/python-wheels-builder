@@ -1,6 +1,6 @@
 name: release-image
 
-# Builds a DRAFT release for a builder image from a gitsign-signed tag `v*`.
+# Builds a DRAFT release for a builder image from a GPG-signed tag `alpine-3.24-musl-vN`.
 #
 # What this workflow does, in order:
 #   gate     require a successful build-environment-image run on main for exactly this commit
@@ -19,7 +19,7 @@ name: release-image
 
 on:
   push:
-    tags: ["v*"]
+    tags: ["alpine-3.24-musl-v[0-9]*"]
   workflow_dispatch: {}
 
 permissions: {}
@@ -33,7 +33,6 @@ env:
   # sha256 of policy/builder-image/policy.json. Update this whenever the policy changes
   # (tests/test_verify_builder_policy.py fails if it drifts).
   POLICY_SHA256: cef4bd0d2d8196e6214f25d2f82cfc6f2a78339ceb267c5674fdabcdba2ee25e
-  GITSIGN_REF: dd51a25b4f9fa103ca6f5cdca4183fa15cb3e627 # v0.14.0
 
 jobs:
   gate:
