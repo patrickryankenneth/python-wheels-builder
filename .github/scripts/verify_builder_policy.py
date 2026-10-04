@@ -388,10 +388,17 @@ def check_tag_signed(ctx, params):
     rc, out = ctx.run(["git", "rev-parse", f"{ref}^{{commit}}"])
     if rc != 0 or out.strip() != ctx.tag_sha:
         return [f"{ctx.tag} points at {out.strip()!r}, expected {ctx.tag_sha}"]
-    rc, _ = ctx.run(["gitsign", "verify-tag",
-                     "--certificate-identity", params["identity"],
-                     "--certificate-oidc-issuer", params["issuer"], ctx.tag])
-    return [] if rc == 0 else [f"gitsign verify-tag failed for {ctx.tag} (identity {params['identity']})"]
+    rc, body = ctx.run(["git", "cat-file", "tag", ref])
+    tagger = [l for l in body.splitlines() if l.startswith("tagger ")]
+    if rc != 0 or not tagger or f"<{params['identity']}>" not in tagger[0]:
+        return [f"{ctx.tag} tagger is not {params['identity']}"]
+    rc, obj = ctx.run(["git", "rev-parse", ref])
+    if rc != 0:
+        return [f"cannot resolve tag object for {ctx.tag}"]
+    rc, out = ctx.run(["gh", "api", f"repos/{params['repo']}/git/tags/{obj.strip()}",
+                       "--jq", r'"\(.verification.verified) \(.verification.reason)"'])
+    res = out.strip().splitlines()[-1] if out.strip() else ""
+    return [] if rc == 0 and res == "true valid" else [f"{ctx.tag} not GitHub-verified: {res!r}"]
 
 
 def check_actions_pinned(ctx, params):

@@ -1,0 +1,48 @@
+name: policy-ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  policy-ci:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.11"
+
+      - name: Lint policy and POLICY.md
+        run: |
+          set -euo pipefail
+          P=policy/builder-image/policy.json
+          M=policy/builder-image/POLICY.md
+          python3 .github/scripts/policy_tool.py --policy "$P" --md "$M" lint
+          python3 .github/scripts/policy_tool.py --policy "$P" --md "$M" check-md
+
+      - name: release.yml pins match policy.json
+        run: |
+          set -euo pipefail
+          P=policy/builder-image/policy.json
+          want_sha="$(grep -oP '^\s*POLICY_SHA256:\s*\K[0-9a-f]{64}' .github/workflows/release.yml)"
+          have_sha="$(sha256sum "$P" | cut -d' ' -f1)"
+          want_tag="$(grep -oP '^\s*POLICY_TAG:\s*\K\S+' .github/workflows/release.yml)"
+          have_tag="$(python3 .github/scripts/policy_tool.py --policy "$P" tag)"
+          [ "$want_sha" = "$have_sha" ] || { echo "::error::POLICY_SHA256 $want_sha != policy.json $have_sha"; exit 1; }
+          [ "$want_tag" = "$have_tag" ] || { echo "::error::POLICY_TAG $want_tag != $have_tag"; exit 1; }
+
+      - name: Tests (verifier, policy tool, gate script)
+        run: |
+          set -euo pipefail
+          python3 -m pip install pytest
+          python3 -m pytest -q

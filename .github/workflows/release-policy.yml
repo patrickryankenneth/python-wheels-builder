@@ -39,6 +39,9 @@ jobs:
   check:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
     env:
       GH_TOKEN: ${{ github.token }}
       WANT: ${{ inputs.policy_version }}
@@ -68,6 +71,20 @@ jobs:
             exit 1
           fi
           echo "MODE=$(python3 .github/scripts/policy_tool.py --policy "$POLICY_FILE" mode)" >> "$GITHUB_ENV"
+
+      - name: Run the test suite (must pass before any release is drafted)
+        run: |
+          set -euo pipefail
+          python3 -m pip install pytest
+          python3 -m pytest -q
+
+      - name: Require green policy-ci on this exact commit
+        run: |
+          set -euo pipefail
+          id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow policy-ci.yml \
+            --commit "$GITHUB_SHA" --status success --event push \
+            --json databaseId --jq '.[0].databaseId // empty')"
+          [ -n "$id" ] || { echo "::error::no successful policy-ci run on main for $GITHUB_SHA"; exit 1; }
 
       - name: Refuse if this policy release already exists
         run: |

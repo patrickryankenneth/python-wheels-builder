@@ -1,4 +1,4 @@
-# Policy builder-image v1
+# Policy builder-image v2
 
 <!-- Generated from policy.json by policy_tool.py render-md. Do not edit. -->
 
@@ -157,20 +157,20 @@ Parameters:
 }
 ```
 
-### IMG-8 - Release tag is annotated and signed by the named identity
+### IMG-8 - Release tag is annotated, signed, and GitHub-verified
 
 - Status: `enforced`
 - Check: `check_tag_signed`
-- Implemented by: gitsign; release workflow; verify_builder_policy.py
+- Implemented by: GPG-signed tag; release workflow; verify_builder_policy.py (GitHub verification API)
 
-The release tag is annotated, points at the commit the image was built from, and its gitsign signature verifies against this identity and issuer.
+The release tag is annotated, points at the commit the image was built from, names this identity as tagger, and GitHub reports its signature as verified (reason valid). The signing key is not pinned: GitHub verifies against a key registered to the tagger's account.
 
 Parameters:
 
 ```json
 {
   "identity": "patrickryankenneth@gmail.com",
-  "issuer": "https://github.com/login/oauth"
+  "repo": "patrickryankenneth/python-wheels-builder"
 }
 ```
 

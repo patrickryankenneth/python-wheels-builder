@@ -3,7 +3,7 @@
 A zero-trust, SLSA-aligned reference architecture for compiling deterministic, cryptographically attested Python wheels for hardened and air-gapped environments.
 
 [![CI & Policy Verifier](https://github.com/patrickryankenneth/python-wheels-builder/actions/workflows/build-environment-image.yml/badge.svg)](https://github.com/patrickryankenneth/python-wheels-builder/actions)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![SLSA Level 3](https://img.shields.io/badge/SLSA-Level_3_Principles-green.svg)](https://slsa.dev)
 
 ---

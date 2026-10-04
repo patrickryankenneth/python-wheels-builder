@@ -16,7 +16,10 @@ def P(rid): return RULES[rid].get("parameters", {})
 
 class FakeRun:
     """by_key maps (image digest, predicate type) -> the predicate gh would return."""
-    def __init__(self, fail=(), by_key=None): self.fail, self.calls, self.by_key = fail, [], by_key or {}
+    def __init__(self, fail=(), by_key=None):
+        self.fail, self.calls, self.by_key = fail, [], by_key or {}
+        self.tagger = "tagger Patrick <patrickryankenneth@gmail.com> 1 +0000"
+        self.verified = "true valid"
     def __call__(self, argv):
         self.calls.append(argv)
         if any(argv[:len(f)] == list(f) for f in self.fail): return 1, ""
@@ -24,7 +27,9 @@ class FakeRun:
             dg = next(x for x in argv if x.startswith("oci://")).rpartition("@")[2]
             p = self.by_key.get((dg, argv[argv.index("--predicate-type") + 1]))
             return 0, json.dumps([] if p is None else [{"verificationResult": {"statement": {"predicate": p}}}])
+        if argv[:3] == ["git", "cat-file", "tag"]: return 0, "object x\ntype commit\n" + self.tagger + "\n"
         if argv[:2] == ["git", "cat-file"]: return 0, "tag\n"
+        if argv[:2] == ["gh", "api"]: return 0, self.verified + "\n"
         if argv[:2] == ["git", "rev-parse"]: return 0, SHA + "\n"
         return 0, ""
 
@@ -102,7 +107,9 @@ def b_base2(c): c.inputs["aarch64"]["base_image_index_digest"] = "sha256:" + "1"
 def b_spdx(c): c.spdx["x86_64"]["components"].append({"purl": "pkg:cargo/extra@1.0.0"})
 def b_nospdx(c): del c.spdx["aarch64"]
 def b_vex(c): c.vex["statements"][0]["status"] = "not_affected"
-def b_tag(c): c.run = FakeRun(fail=[("gitsign",)])
+def b_tag(c): c.run = FakeRun(fail=[("gh", "api")])
+def b_tag_unverified(c): c.run.verified = "false unsigned"
+def b_tagger(c): c.run.tagger = "tagger X <evil@example.com> 1 +0000"
 def b_pin(c): (c.root / ".github/workflows/a.yml").write_text("      - uses: actions/checkout@v4\n")
 def b_assets(c): c.assets.pop()
 def K(c, arch, ptype): return (c.digests[arch], ptype)
@@ -128,7 +135,7 @@ BAD = {"check_image_attested": [b_attest, b_commit],
        "check_vex_attested": [b_attest, b_ia_nodigest, b_vx_mismatch, b_vx_none, b_vx_ctx], "check_gate_script_hash": [b_gate],
        "check_pinned_crates": [b_pins], "check_no_network_crates": [b_net], "check_zero_deb": [b_deb],
        "check_inputs_recorded": [b_inputs], "check_base_image_pinned": [b_base, b_base2, b_base3, b_base4], "check_sbom_and_vex": [b_vex, b_spdx, b_nospdx],
-       "check_tag_signed": [b_tag], "check_actions_pinned": [b_pin], "check_release_assets": [b_assets]}
+       "check_tag_signed": [b_tag, b_tag_unverified, b_tagger], "check_actions_pinned": [b_pin], "check_release_assets": [b_assets]}
 
 
 @pytest.mark.parametrize("check,mutator", [(k, m) for k, ms in BAD.items() for m in ms])

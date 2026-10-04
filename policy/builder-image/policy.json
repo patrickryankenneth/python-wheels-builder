@@ -12,7 +12,7 @@
     "builder-inputs.json is attested (IMG-12) as produced by the build workflow, but it is the workflow's own record of what ran. The unpinned inputs it records (runner, APK packages, rustup archives, crate tarballs) are recorded, not verified.",
     "The SBOMs and the VEX are attested (IMG-13, IMG-14) as produced by release.yml at the release tag. That shows who produced them, not that they are correct: the SBOMs record what Syft found in the image, and the VEX remains the maintainer's assertion."
   ],
-  "policy_version": "v1",
+  "policy_version": "v2",
   "rules": [
     {
       "check": "check_image_attested",
@@ -135,14 +135,14 @@
     {
       "check": "check_tag_signed",
       "id": "IMG-8",
-      "implemented_by": "gitsign; release workflow; verify_builder_policy.py",
+      "implemented_by": "GPG-signed tag; release workflow; verify_builder_policy.py (GitHub verification API)",
       "parameters": {
         "identity": "patrickryankenneth@gmail.com",
-        "issuer": "https://github.com/login/oauth"
+        "repo": "patrickryankenneth/python-wheels-builder"
       },
-      "statement": "The release tag is annotated, points at the commit the image was built from, and its gitsign signature verifies against this identity and issuer.",
+      "statement": "The release tag is annotated, points at the commit the image was built from, names this identity as tagger, and GitHub reports its signature as verified (reason valid). The signing key is not pinned: GitHub verifies against a key registered to the tagger's account.",
       "status": "enforced",
-      "title": "Release tag is annotated and signed by the named identity"
+      "title": "Release tag is annotated, signed, and GitHub-verified"
     },
     {
       "check": "check_actions_pinned",

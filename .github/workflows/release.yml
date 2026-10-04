@@ -29,10 +29,10 @@ env:
   SYFT_VERSION: "1.54.0"
   VEX_PATH: environments/alpine-3.24-musl/vex/builder.openvex.json
   VEX_PREDICATE_TYPE: https://openvex.dev/ns/v0.2.0
-  POLICY_TAG: policy-builder-image-v1
+  POLICY_TAG: policy-builder-image-v2
   # sha256 of policy/builder-image/policy.json. Update this whenever the policy changes
   # (tests/test_verify_builder_policy.py fails if it drifts).
-  POLICY_SHA256: 0a54fd52107cf24d9b100c6e0eb98e65fd304b55c4d1c09558ebcaaeaabba7ac
+  POLICY_SHA256: cef4bd0d2d8196e6214f25d2f82cfc6f2a78339ceb267c5674fdabcdba2ee25e
   GITSIGN_REF: dd51a25b4f9fa103ca6f5cdca4183fa15cb3e627 # v0.14.0
 
 jobs:
@@ -220,12 +220,6 @@ jobs:
           set -euo pipefail
           gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -p 'sbom-*' -D artifacts
           ls -R artifacts
-
-      - name: Install gitsign
-        run: |
-          set -euo pipefail
-          go install "github.com/sigstore/gitsign@${GITSIGN_REF}"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Stage release assets
         run: |
