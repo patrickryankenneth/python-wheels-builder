@@ -4,8 +4,9 @@ name: release-image
 #
 # What this workflow does, in order:
 #   gate     require a successful build-environment-image run on main for exactly this commit
-#   attest   per arch: verify the build provenance, generate SBOMs with pinned Syft, and attest the
-#            CycloneDX SBOM, the SPDX SBOM and the VEX on the image digest (signer: this workflow)
+#   attest   per arch: verify the build provenance, generate SBOMs with pinned Syft, run
+#            assert-image.sh against the image and its SBOM (the facts the VEX relies on), and attest
+#            the CycloneDX SBOM, the SPDX SBOM and the VEX on the image digest (signer: this workflow)
 #   release  load the published builder policy, check its sha256 against the value committed
 #            below, run verify_builder_policy.py (one check per enforced rule), and only then
 #            create a DRAFT release. It never publishes: the maintainer reviews and publishes.
@@ -147,6 +148,12 @@ jobs:
             [ "$(stat -c %s "$f")" -lt 16777216 ] || { echo "::error::$f is 16 MiB or larger; cannot be attested"; exit 1; }
           done
           ls -l out
+
+      - name: Assert the image properties the VEX relies on
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          .github/scripts/assert-image.sh "$IMAGE@$D" "out/sbom.$ARCH.cdx.json" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Attest CycloneDX SBOM
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
