@@ -1,0 +1,262 @@
+name: release-image
+
+# Builds a DRAFT release for a builder image from a gitsign-signed tag `v*`.
+#
+# What this workflow does, in order:
+#   gate     require a successful build-environment-image run on main for exactly this commit
+#   attest   per arch: verify the build provenance, generate SBOMs with pinned Syft, and attest the
+#            CycloneDX SBOM, the SPDX SBOM and the VEX on the image digest (signer: this workflow)
+#   release  load the published builder policy, check its sha256 against the value committed
+#            below, run verify_builder_policy.py (one check per enforced rule), and only then
+#            create a DRAFT release. It never publishes: the maintainer reviews and publishes.
+#
+# The tag must point at the commit that built the image. The build workflow is path-filtered,
+# so a later commit that touched none of its paths has no build run and the gate refuses it.
+#
+# Dry run: `gh workflow run release.yml --ref <tag>` (workflow_dispatch on a tag ref). It does
+# everything above, using the policy.json in the tagged commit instead of the published release,
+# and creates no release. The sha256 check still applies.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/patrickryankenneth/python-wheels-builder-alpine
+  SYFT_VERSION: "1.54.0"
+  VEX_PATH: environments/alpine-3.24-musl/vex/builder.openvex.json
+  VEX_PREDICATE_TYPE: https://openvex.dev/ns/v0.2.0
+  POLICY_TAG: policy-builder-image-v1
+  # sha256 of policy/builder-image/policy.json. Update this whenever the policy changes
+  # (tests/test_verify_builder_policy.py fails if it drifts).
+  POLICY_SHA256: 0a54fd52107cf24d9b100c6e0eb98e65fd304b55c4d1c09558ebcaaeaabba7ac
+  GITSIGN_REF: dd51a25b4f9fa103ca6f5cdca4183fa15cb3e627 # v0.14.0
+
+jobs:
+  gate:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run_id: ${{ steps.build.outputs.run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Find the successful build run on main for exactly this commit
+        id: build
+        run: |
+          set -euo pipefail
+          id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow build-environment-image.yml \
+            --commit "$GITHUB_SHA" --status success --event push \
+            --json databaseId,headBranch \
+            --jq '[.[] | select(.headBranch == "main")] | .[0].databaseId // empty')"
+          if [ -z "$id" ]; then
+            echo "::error::no successful build-environment-image run on main for $GITHUB_SHA. Tag the commit that built the image."
+            exit 1
+          fi
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"
+          echo "Build run: $id" >> "$GITHUB_STEP_SUMMARY"
+
+  attest:
+    needs: gate
+    name: attest SBOMs and VEX (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+            syft_arch: amd64
+            syft_sha256: 54a87372498168b2d033e876fd41fa4e8035b872699e525a57046e1f2f09c860
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            syft_arch: arm64
+            syft_sha256: ee6d4566373a05b344bc6b5f1706f14419bf9338ba39ff686e247deefe9b8818
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      actions: read
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUN_ID: ${{ needs.gate.outputs.run_id }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Load image digest and builder inputs from the build run
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::bad build run id"; exit 1; }
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" -n "image-digest-$ARCH" -D digests
+          D="$(tr -d '[:space:]' < "digests/image.digest.$ARCH")"
+          [[ "$D" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::bad digest: $D"; exit 1; }
+          echo "D=$D" >> "$GITHUB_ENV"
+          echo "Image digest: $D"
+
+      - name: Verify build provenance (named workflow, main, this commit)
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE@$D" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build-environment-image.yml" \
+            --source-ref refs/heads/main \
+            --source-digest "$GITHUB_SHA"
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: Install pinned Syft
+        env:
+          SYFT_ARCH: ${{ matrix.syft_arch }}
+          SYFT_SHA256: ${{ matrix.syft_sha256 }}
+        run: |
+          set -euo pipefail
+          f="syft_${SYFT_VERSION}_linux_${SYFT_ARCH}.tar.gz"
+          curl -fsSL --proto '=https' -o "$f" \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/$f"
+          echo "$SYFT_SHA256  $f" | sha256sum --check --strict -
+          mkdir -p "$RUNNER_TEMP/syft"
+          tar -xzf "$f" -C "$RUNNER_TEMP/syft" syft
+          "$RUNNER_TEMP/syft/syft" version
+
+      - name: Generate SBOMs from the image digest
+        env:
+          SYFT_CHECK_FOR_APP_UPDATE: "false"
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          "$RUNNER_TEMP/syft/syft" "registry:$IMAGE@$D" \
+            -o "spdx-json=out/sbom.$ARCH.spdx.json" \
+            -o "cyclonedx-json=out/sbom.$ARCH.cdx.json"
+          cp "digests/image.digest.$ARCH" "digests/builder-inputs.$ARCH.json" out/
+          # actions/attest rejects SBOMs and predicates over 16 MiB; fail here with a clear message.
+          for f in "out/sbom.$ARCH.spdx.json" "out/sbom.$ARCH.cdx.json" "$VEX_PATH"; do
+            [ "$(stat -c %s "$f")" -lt 16777216 ] || { echo "::error::$f is 16 MiB or larger; cannot be attested"; exit 1; }
+          done
+          ls -l out
+
+      - name: Attest CycloneDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.D }}
+          sbom-path: out/sbom.${{ matrix.arch }}.cdx.json
+          push-to-registry: true
+
+      - name: Attest SPDX SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.D }}
+          sbom-path: out/sbom.${{ matrix.arch }}.spdx.json
+          push-to-registry: true
+
+      - name: Attest VEX (OpenVEX predicate)
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.D }}
+          predicate-type: ${{ env.VEX_PREDICATE_TYPE }}
+          predicate-path: ${{ env.VEX_PATH }}
+          push-to-registry: true
+
+      - name: Upload SBOMs, digest and inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sbom-${{ matrix.arch }}
+          path: out/
+          if-no-files-found: error
+
+  release:
+    needs: [gate, attest]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch tags (keep the annotated tag object)
+        run: git fetch --force --tags origin
+
+      - name: Load the builder policy and check its hash
+        run: |
+          set -euo pipefail
+          mkdir -p policy-dl
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            gh release download "$POLICY_TAG" --repo "$GITHUB_REPOSITORY" --pattern policy.json --dir policy-dl
+            gh attestation verify policy-dl/policy.json --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-policy.yml" \
+              --source-ref refs/heads/main
+          else
+            echo "::notice::dry run: using policy/builder-image/policy.json from the tagged commit"
+            cp policy/builder-image/policy.json policy-dl/policy.json
+          fi
+          echo "$POLICY_SHA256  policy-dl/policy.json" | sha256sum --check --strict -
+
+      - name: Download the attested artifacts from this run
+        run: |
+          set -euo pipefail
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" -p 'sbom-*' -D artifacts
+          ls -R artifacts
+
+      - name: Install gitsign
+        run: |
+          set -euo pipefail
+          go install "github.com/sigstore/gitsign@${GITSIGN_REF}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Stage release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          for a in x86_64 aarch64; do
+            for f in "builder-inputs.$a.json" "image.digest.$a" "sbom.$a.cdx.json" "sbom.$a.spdx.json"; do
+              cp "artifacts/sbom-$a/$f" release-assets/
+            done
+          done
+          cp "$VEX_PATH" release-assets/builder.openvex.json
+          ls -1 release-assets | sort > assets.txt
+          cat assets.txt
+
+      - name: Verify against the builder policy
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/verify_builder_policy.py \
+            --policy policy-dl/policy.json \
+            --tag "$GITHUB_REF_NAME" --tag-sha "$GITHUB_SHA" \
+            --artifacts-dir artifacts --vex "$VEX_PATH" \
+            --assets-file assets.txt
+
+      - name: Create DRAFT release and verify its asset set (never publishes)
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            --title "Builder image $GITHUB_REF_NAME" \
+            --notes "Draft. Verified against policy ${POLICY_TAG} (policy.json sha256 ${POLICY_SHA256}) by release.yml. Verify the image: gh attestation verify oci://${IMAGE}@<digest from image.digest.<arch>> --repo ${GITHUB_REPOSITORY} --signer-workflow ${GITHUB_REPOSITORY}/.github/workflows/build-environment-image.yml, and with --predicate-type for the SBOM and VEX attestations signed by release.yml."
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" release-assets/*
+          got="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort | .[]')"
+          [ "$got" = "$(cat assets.txt)" ] || { echo "::error::draft asset set differs from the verified set"; exit 1; }
+          echo "### Draft $GITHUB_REF_NAME created - NOT published" >> "$GITHUB_STEP_SUMMARY"

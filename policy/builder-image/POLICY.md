@@ -142,7 +142,7 @@ Parameters:
 
 - Status: `enforced`
 - Check: `check_sbom_and_vex`
-- Implemented by: sbom-image.yml; vex/builder.openvex.json; verify_builder_policy.py
+- Implemented by: release.yml (Syft SBOMs); environments/alpine-3.24-musl/vex/builder.openvex.json; verify_builder_policy.py
 
 Both architectures have a non-trivial CycloneDX SBOM and an SPDX SBOM that agree on cargo and deb components. The VEX is OpenVEX with valid statuses, and the listed components are marked affected (the maintainer does not claim them unaffected).
 
@@ -224,6 +224,67 @@ Parameters:
 }
 ```
 
+### IMG-12 - Build inputs are attested
+
+- Status: `enforced`
+- Check: `check_inputs_attested`
+- Implemented by: build-environment-image.yml (actions/attest, custom predicate on the image digest); verify_builder_policy.py
+
+For both architectures, the image digest has a second GitHub attestation of the named predicate type, produced by the named workflow from refs/heads/main at exactly the commit the release tag points to, and its predicate is identical to the builder-inputs.json released for that architecture. This binds the recorded inputs to the build that produced the image; it does not make the unpinned inputs trustworthy.
+
+Parameters:
+
+```json
+{
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "predicate_type": "https://github.com/patrickryankenneth/python-wheels-builder/predicate/builder-inputs/v1",
+  "repo": "patrickryankenneth/python-wheels-builder",
+  "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/build-environment-image.yml",
+  "source_ref": "refs/heads/main"
+}
+```
+
+### IMG-13 - SBOMs are attested
+
+- Status: `enforced`
+- Check: `check_sbom_attested`
+- Implemented by: release.yml (actions/attest sbom-path on the image digest); verify_builder_policy.py
+
+For both architectures, the image digest has GitHub attestations for a CycloneDX and an SPDX SBOM, produced by the named workflow from the release tag at exactly the commit the tag points to, and each attested predicate is identical to the SBOM released for that architecture. This shows which workflow produced the SBOMs from the image digest; it does not show that they are complete.
+
+Parameters:
+
+```json
+{
+  "cyclonedx_predicate_type": "https://cyclonedx.org/bom",
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "repo": "patrickryankenneth/python-wheels-builder",
+  "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/release.yml",
+  "source_ref_template": "refs/tags/{tag}",
+  "spdx_predicate_type_prefix": "https://spdx.dev/Document/v"
+}
+```
+
+### IMG-14 - VEX is attested
+
+- Status: `enforced`
+- Check: `check_vex_attested`
+- Implemented by: release.yml (actions/attest custom OpenVEX predicate on the image digest); verify_builder_policy.py
+
+For both architectures, the image digest has a GitHub attestation of the OpenVEX predicate type, produced by the named workflow from the release tag at exactly the commit the tag points to, and its predicate is identical to the released builder.openvex.json. This shows which workflow and commit published the VEX, not that its statements are true.
+
+Parameters:
+
+```json
+{
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "predicate_type": "https://openvex.dev/ns/v0.2.0",
+  "repo": "patrickryankenneth/python-wheels-builder",
+  "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/release.yml",
+  "source_ref_template": "refs/tags/{tag}"
+}
+```
+
 ### TRU-1 - GitHub-hosted runner
 
 - Status: `declared`
@@ -266,5 +327,5 @@ Crate tarballs are trusted through the registry's checksums and the locked depen
 - The sccache build gate covers sccache only, not other tools in the image.
 - The local gh guard is a convenience for one maintainer and is not enforcement.
 - The number of cargo components is recorded in the SBOM and deliberately not a rule.
-- builder-inputs.json is written by the build workflow but is not itself attested or signed; the image attestation binds only the image digest. IMG-6 checks its shape, and IMG-1, IMG-2 and IMG-11 cross-check parts of it against the attestation and git, but its authenticity beyond that rests on the workflow run that produced it.
-- The SBOMs and the VEX are not individually attested. They are release assets, and IMG-7 checks that they are well-formed and consistent, not who produced them.
+- builder-inputs.json is attested (IMG-12) as produced by the build workflow, but it is the workflow's own record of what ran. The unpinned inputs it records (runner, APK packages, rustup archives, crate tarballs) are recorded, not verified.
+- The SBOMs and the VEX are attested (IMG-13, IMG-14) as produced by release.yml at the release tag. That shows who produced them, not that they are correct: the SBOMs record what Syft found in the image, and the VEX remains the maintainer's assertion.

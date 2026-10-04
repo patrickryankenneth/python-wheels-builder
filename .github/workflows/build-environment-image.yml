@@ -14,6 +14,7 @@ on:
 env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/python-wheels-builder-alpine
   CONTEXT: environments/alpine-3.24-musl
+  INPUTS_PREDICATE_TYPE: https://github.com/patrickryankenneth/python-wheels-builder/predicate/builder-inputs/v1
 
 # No default permissions; each job asks for exactly what it needs.
 permissions: {}
@@ -106,7 +107,7 @@ jobs:
           echo "\`$IMAGE@$DIGEST\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@96278af6caaf10aea03fd8d33a09a777ca52d62f # v3.2.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/python-wheels-builder-alpine
           subject-digest: ${{ steps.push.outputs.digest }}
@@ -175,6 +176,29 @@ jobs:
                       docker_version:$docker_version, buildx_version:$buildx_version},
               builder_image:$builder_image, source_commit:$commit}' > "builder-inputs.$ARCH.json"
           cat "builder-inputs.$ARCH.json"
+
+      - name: Attest builder inputs
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/python-wheels-builder-alpine
+          subject-digest: ${{ steps.push.outputs.digest }}
+          predicate-type: ${{ env.INPUTS_PREDICATE_TYPE }}
+          predicate-path: builder-inputs.${{ matrix.arch }}.json
+          push-to-registry: true
+
+      - name: Verify the builder-inputs attestation we just made
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "${{ github.repository }}" \
+            --signer-workflow "${{ github.repository }}/.github/workflows/build-environment-image.yml" \
+            --predicate-type "$INPUTS_PREDICATE_TYPE" --format json \
+            | jq -e --slurpfile want "builder-inputs.$ARCH.json" \
+                'any(.[]; .verificationResult.statement.predicate == $want[0])' > /dev/null
 
       - name: Upload digest and inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

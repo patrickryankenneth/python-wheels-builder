@@ -136,6 +136,95 @@ def check_image_attested(ctx, params):
     return errs
 
 
+def _digest_ok(ctx, a, errs):
+    d = ctx.digests.get(a)
+    if isinstance(d, str) and DIGEST_RE.match(d):
+        return d
+    errs.append(f"{a}: image digest missing or malformed: {d!r}")
+    return None
+
+
+def _attested_predicates(ctx, a, d, params, ptype, source_ref, errs):
+    """gh attestation verify the image digest for one predicate type; return the list of
+    verified predicates (empty list if none), or None after recording an error."""
+    rc, out = ctx.run([
+        "gh", "attestation", "verify", f"oci://{params['image']}@{d}",
+        "--repo", params["repo"],
+        "--signer-workflow", params["signer_workflow"],
+        "--source-ref", source_ref,
+        "--source-digest", ctx.tag_sha,
+        "--predicate-type", ptype,
+        "--format", "json",
+    ])
+    if rc != 0:
+        errs.append(f"{a}: gh attestation verify failed for {ptype} on {d}")
+        return None
+    try:
+        results = json.loads(out)
+    except ValueError:
+        errs.append(f"{a}: gh attestation verify output is not JSON ({ptype})")
+        return None
+    preds = []
+    for r in results if isinstance(results, list) else []:
+        stmt = ((r or {}).get("verificationResult") or {}).get("statement") or {}
+        preds.append(stmt.get("predicate"))
+    if not preds:
+        errs.append(f"{a}: no {ptype} attestation returned for {d}")
+        return None
+    return preds
+
+
+def _predicate_equals(ctx, a, d, params, ptype, source_ref, doc, label, errs):
+    if not isinstance(doc, dict):
+        errs.append(f"{a}: released {label} missing")
+        return
+    preds = _attested_predicates(ctx, a, d, params, ptype, source_ref, errs)
+    if preds is not None and doc not in preds:
+        errs.append(f"{a}: released {label} differs from the attested predicate on {d}")
+
+
+def check_inputs_attested(ctx, params):
+    """builder-inputs.<arch>.json is the predicate of a verified attestation on that arch's
+    image digest (named workflow, main, tagged commit, named predicate type)."""
+    errs = []
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        if d:
+            _predicate_equals(ctx, a, d, params, params["predicate_type"], params["source_ref"],
+                              ctx.inputs.get(a), "builder-inputs.json", errs)
+    return errs
+
+
+def check_sbom_attested(ctx, params):
+    """The released CycloneDX and SPDX SBOMs are the predicates of verified attestations on the
+    image digest, made by the release workflow from the release tag."""
+    errs = []
+    sref = params["source_ref_template"].format(tag=ctx.tag)
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        if not d:
+            continue
+        cdx, spdx = ctx.sboms.get(a), ctx.spdx.get(a)
+        _predicate_equals(ctx, a, d, params, params["cyclonedx_predicate_type"], sref, cdx, "CycloneDX SBOM", errs)
+        ver = str((spdx or {}).get("spdxVersion", "")).partition("-")[2]
+        if not ver:
+            errs.append(f"{a}: SPDX SBOM missing or has no spdxVersion")
+            continue
+        _predicate_equals(ctx, a, d, params, params["spdx_predicate_type_prefix"] + ver, sref, spdx, "SPDX SBOM", errs)
+    return errs
+
+
+def check_vex_attested(ctx, params):
+    """The released OpenVEX file is the predicate of a verified attestation on each image digest."""
+    errs = []
+    sref = params["source_ref_template"].format(tag=ctx.tag)
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        if d:
+            _predicate_equals(ctx, a, d, params, params["predicate_type"], sref, ctx.vex, "builder.openvex.json", errs)
+    return errs
+
+
 def check_gate_script_hash(ctx, params):
     import hashlib
     want = hashlib.sha256(ctx.git_show(params["script_path"])).hexdigest()
