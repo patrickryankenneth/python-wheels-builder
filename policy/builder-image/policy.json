@@ -1,0 +1,224 @@
+{
+  "enforcement_mode": "enforced",
+  "not_guaranteed": [
+    "The image is not reproducible, and apk packages, rustup archives and crate tarballs have no content-hash pins.",
+    "The runner image is unpinned; its identity is recorded, not checked.",
+    "An attestation shows where and how the image was built, not that its contents are free of vulnerabilities. No vulnerability scan is part of this policy.",
+    "The VEX is the maintainer's assertion, not an independent finding.",
+    "Enforcement happens at release time, not at pull time. Consumers must verify the attestation and this policy themselves.",
+    "The sccache build gate covers sccache only, not other tools in the image.",
+    "The local gh guard is a convenience for one maintainer and is not enforcement.",
+    "The number of cargo components is recorded in the SBOM and deliberately not a rule.",
+    "builder-inputs.json is written by the build workflow but is not itself attested or signed; the image attestation binds only the image digest. IMG-6 checks its shape, and IMG-1, IMG-2 and IMG-11 cross-check parts of it against the attestation and git, but its authenticity beyond that rests on the workflow run that produced it.",
+    "The SBOMs and the VEX are not individually attested. They are release assets, and IMG-7 checks that they are well-formed and consistent, not who produced them."
+  ],
+  "policy_version": "v1",
+  "rules": [
+    {
+      "check": "check_image_attested",
+      "id": "IMG-1",
+      "implemented_by": "build-environment-image.yml + GitHub build-provenance attestation; verify_builder_policy.py",
+      "parameters": {
+        "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+        "repo": "patrickryankenneth/python-wheels-builder",
+        "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/build-environment-image.yml",
+        "source_ref": "refs/heads/main"
+      },
+      "statement": "For both architectures, the image digest has a GitHub attestation produced by the named workflow, from refs/heads/main, at exactly the commit the release tag points to, and builder-inputs.json records that same commit as source_commit.",
+      "status": "enforced",
+      "title": "Built by the named workflow from main at the tagged commit"
+    },
+    {
+      "check": "check_gate_script_hash",
+      "id": "IMG-2",
+      "implemented_by": "Containerfile (gate runs in the build); builder-inputs.json assert_script_sha256; verify_builder_policy.py",
+      "parameters": {
+        "script_path": "environments/alpine-3.24-musl/assert-sccache-build.sh"
+      },
+      "statement": "builder-inputs.json records the sha256 of the sccache build gate script, and it equals the sha256 of that script at the tagged commit. The Containerfile runs the gate during the build and the build fails if it fails.",
+      "status": "enforced",
+      "title": "The build gate ran, at this version"
+    },
+    {
+      "check": "check_pinned_crates",
+      "id": "IMG-3",
+      "implemented_by": "assert-sccache-build.sh (build); verify_builder_policy.py against each SBOM",
+      "parameters": {
+        "crates": {
+          "bytes": "1.10.1",
+          "rand": "0.8.5",
+          "tar": "0.4.40"
+        }
+      },
+      "statement": "Each architecture's SBOM lists exactly these crate versions and no other version of these crates.",
+      "status": "enforced",
+      "title": "Pinned crates are exact"
+    },
+    {
+      "check": "check_no_network_crates",
+      "id": "IMG-4",
+      "implemented_by": "assert-sccache-build.sh (build); verify_builder_policy.py against each SBOM",
+      "parameters": {
+        "denylist": [
+          "hyper-rustls",
+          "opendal",
+          "openssl",
+          "reqwest",
+          "rustls",
+          "rustls-webpki"
+        ]
+      },
+      "statement": "Neither architecture's SBOM contains any crate on this denylist. The list is the one the build gate (assert-sccache-build.sh FORBIDDEN_CRATES) rejects in the dependency tree.",
+      "status": "enforced",
+      "title": "No network-stack crates"
+    },
+    {
+      "check": "check_zero_deb",
+      "id": "IMG-5",
+      "implemented_by": "verify_builder_policy.py against each SBOM",
+      "parameters": {},
+      "statement": "Neither architecture's SBOM contains a deb component.",
+      "status": "enforced",
+      "title": "Zero deb components"
+    },
+    {
+      "check": "check_inputs_recorded",
+      "id": "IMG-6",
+      "implemented_by": "build-environment-image.yml writes builder-inputs.<arch>.json; verify_builder_policy.py",
+      "parameters": {
+        "required_fields": [
+          "apk_lock_sha256",
+          "assert_script_sha256",
+          "base_image_index_digest",
+          "base_image_ref",
+          "base_platform",
+          "base_platform_manifest_digest",
+          "builder_image",
+          "cargo_auditable_version",
+          "requirements_builder_sha256",
+          "rust_version",
+          "rustup_sha256",
+          "rustup_version",
+          "sccache_version",
+          "source_commit"
+        ],
+        "runner_arch": {
+          "aarch64": "ARM64",
+          "x86_64": "X64"
+        },
+        "runner_fields": [
+          "arch",
+          "buildx_version",
+          "docker_version",
+          "image_os",
+          "image_version"
+        ]
+      },
+      "statement": "For both architectures, builder-inputs.json has every required field as a non-empty string, a runner object with every runner field non-empty, and a runner.arch matching the architecture. This records the unpinned inputs; recording them does not pin them.",
+      "status": "enforced",
+      "title": "Build inputs are recorded"
+    },
+    {
+      "check": "check_sbom_and_vex",
+      "id": "IMG-7",
+      "implemented_by": "sbom-image.yml; vex/builder.openvex.json; verify_builder_policy.py",
+      "parameters": {
+        "min_cargo_components": 1,
+        "vex_must_be_affected": [
+          "pkg:cargo/bytes@1.10.1"
+        ]
+      },
+      "statement": "Both architectures have a non-trivial CycloneDX SBOM and an SPDX SBOM that agree on cargo and deb components. The VEX is OpenVEX with valid statuses, and the listed components are marked affected (the maintainer does not claim them unaffected).",
+      "status": "enforced",
+      "title": "SBOM and VEX are present and well-formed"
+    },
+    {
+      "check": "check_tag_signed",
+      "id": "IMG-8",
+      "implemented_by": "gitsign; release workflow; verify_builder_policy.py",
+      "parameters": {
+        "identity": "patrickryankenneth@gmail.com",
+        "issuer": "https://github.com/login/oauth"
+      },
+      "statement": "The release tag is annotated, points at the commit the image was built from, and its gitsign signature verifies against this identity and issuer.",
+      "status": "enforced",
+      "title": "Release tag is annotated and signed by the named identity"
+    },
+    {
+      "check": "check_actions_pinned",
+      "id": "IMG-9",
+      "implemented_by": "verify_builder_policy.py over .github/workflows at the tagged commit",
+      "parameters": {},
+      "statement": "Every non-local `uses:` in every workflow at the tagged commit is pinned to a full 40-character commit SHA (docker:// references to a sha256 digest). This replaces the legacy declared-only ACT-1.",
+      "status": "enforced",
+      "title": "Workflow actions are pinned to commit SHAs"
+    },
+    {
+      "check": "check_release_assets",
+      "id": "IMG-10",
+      "implemented_by": "release workflow; verify_builder_policy.py on the draft release",
+      "parameters": {
+        "expected_assets": [
+          "builder-inputs.aarch64.json",
+          "builder-inputs.x86_64.json",
+          "builder.openvex.json",
+          "image.digest.aarch64",
+          "image.digest.x86_64",
+          "sbom.aarch64.cdx.json",
+          "sbom.aarch64.spdx.json",
+          "sbom.x86_64.cdx.json",
+          "sbom.x86_64.spdx.json"
+        ]
+      },
+      "statement": "The draft release's asset set equals this list. SHA256SUMS and its Sigstore bundle are added by the maintainer when signing, after this check, and are checked by the publish guard.",
+      "status": "enforced",
+      "title": "Release carries exactly the expected assets"
+    },
+    {
+      "check": "check_base_image_pinned",
+      "id": "IMG-11",
+      "implemented_by": "Containerfile FROM line; builder-inputs.json; verify_builder_policy.py reads the Containerfile at the tagged commit",
+      "parameters": {
+        "containerfile_path": "environments/alpine-3.24-musl/Containerfile"
+      },
+      "statement": "Every external FROM in the Containerfile at the tagged commit is pinned to a sha256 digest, and the digest it pins is the base image index digest recorded in builder-inputs.json for both architectures. Both architectures were built from the same index. This is a content-addressed input.",
+      "status": "enforced",
+      "title": "Base image is pinned by digest"
+    },
+    {
+      "evidence": "builder-inputs.json runner object (image_os, image_version, arch, docker_version, buildx_version)",
+      "id": "TRU-1",
+      "implemented_by": "GitHub-hosted runner images",
+      "statement": "The runner image is trusted, not pinned. Its identity is recorded; it is not verified against a known-good value.",
+      "status": "declared",
+      "title": "GitHub-hosted runner"
+    },
+    {
+      "evidence": "apk.lock.<arch> (name+version) and the SBOM",
+      "id": "TRU-2",
+      "implemented_by": "Alpine repository signatures",
+      "statement": "Packages are trusted through Alpine's repository signatures. The lock records names and versions, not content hashes.",
+      "status": "declared",
+      "title": "Alpine APK packages"
+    },
+    {
+      "evidence": "exact rust and rustup versions, rustup-init sha256",
+      "id": "TRU-3",
+      "implemented_by": "rustup manifest and archive verification",
+      "statement": "Toolchain archives are trusted through rustup's own verification. They are not independently pinned by hash.",
+      "status": "declared",
+      "title": "Rust toolchain archives"
+    },
+    {
+      "evidence": "exact versions in the SBOM and .deps.txt",
+      "id": "TRU-4",
+      "implemented_by": "registry integrity checks and cargo --locked",
+      "statement": "Crate tarballs are trusted through the registry's checksums and the locked dependency graph. They are not independently pinned by hash.",
+      "status": "declared",
+      "title": "Cargo crate tarballs"
+    }
+  ],
+  "schema": 2,
+  "scope": "builder-image",
+  "summary": "Enforcing policy for the Alpine/musl builder image (ghcr.io/patrickryankenneth/python-wheels-builder-alpine). The release workflow loads this file, checks its sha256, runs one verifier function per enforced rule, and refuses to produce a release if any fails. Declared rules are trust roots: evidence is recorded and nothing is verified. Changing a promise means publishing a new version."
+}
