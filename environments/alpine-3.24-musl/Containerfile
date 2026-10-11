@@ -20,14 +20,21 @@
 # Get the digest with:  skopeo inspect --format '{{.Digest}}' docker://docker.io/library/alpine:3.24
 FROM docker.io/library/alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
-# build-base: gcc/make/etc - the C toolchain Rust's linker needs.
+# Toolchain spelled out instead of build-base, which also pulls in `patch` (never used).
+# perl is deliberately absent: the dbt-oss build does not need it, and git-perl would come with it.
+# readelf/objdump are deleted: the build never calls them.
 # python3-dev: maturin's build backend links against libpython.
 # openssl-dev/libffi-dev: common transitive needs for Rust crates with
 # native deps.
 # NOTE: Alpine has no package literally named "protoc" - the binary ships
 # in "protobuf". Do not reintroduce "protoc" here.
 RUN apk add --no-cache \
-        build-base \
+        binutils \
+        file \
+        fortify-headers \
+        g++ \
+        gcc \
+        libc-dev \
         curl \
         git \
         python3 \
@@ -37,11 +44,12 @@ RUN apk add --no-cache \
         openssl-libs-static \
         libffi-dev \
         pkgconfig \
-        perl \
         make \
         patchelf \
         protobuf \
-        protobuf-dev
+        protobuf-dev \
+    && find / -xdev ! -type d \( -name readelf -o -name objdump \) -delete \
+    && ! find / -xdev ! -type d \( -name '*readelf*' -o -name '*objdump*' \) | grep .
 
 # Fail the image build in seconds if these didn't land.
 RUN patchelf --version && protoc --version
@@ -104,7 +112,9 @@ COPY requirements-builder.txt /tmp/requirements-builder.txt
 RUN pip install --break-system-packages --no-cache-dir --require-hashes \
         -r /tmp/requirements-builder.txt \
     && rm /tmp/requirements-builder.txt \
-    && maturin --version
+    && maturin --version \
+    && apk del py3-pip \
+    && ! python3 -m pip --version >/dev/null 2>&1
 
 LABEL org.opencontainers.image.source="https://github.com/patrickryankenneth/python-wheels-builder"
 WORKDIR /build
