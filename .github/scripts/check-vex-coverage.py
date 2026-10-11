@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # usage: check-vex-coverage.py SCAN.json SBOM.json VEX.json OUT.json
-import json, sys, datetime as dt
+import hashlib, json, sys, datetime as dt
 
 MAX_DB_AGE_DAYS, MIN_COMPONENTS = 3, 100
 
@@ -27,6 +27,7 @@ def ok_status(s, severity):
 
 def main(scan_p, sbom_p, vex_p, out_p):
     scan, sbom, vex = (json.load(open(p)) for p in (scan_p, sbom_p, vex_p))
+    sha = {k: hashlib.sha256(open(q, 'rb').read()).hexdigest() for k, q in (('scan', scan_p), ('sbom', sbom_p), ('vex', vex_p))}
     problems, covered, uncovered, seen = [], [], [], set()
     n = len(sbom.get("components", []))
     if n < MIN_COMPONENTS:
@@ -55,7 +56,7 @@ def main(scan_p, sbom_p, vex_p, out_p):
     json.dump({"verdict": verdict, "scanner": desc.get("name"), "scanner_version": desc.get("version"),
                "db_built": built, "sbom_components": n, "findings": len(covered) + len(uncovered),
                "covered": covered, "uncovered": uncovered, "problems": problems,
-               "vex_statements_without_finding": unused}, open(out_p, "w"), indent=2, sort_keys=True)
+               "vex_statements_without_finding": unused, "input_sha256": sha}, open(out_p, "w"), indent=2, sort_keys=True)
     print(f"{verdict}: {len(covered)} covered, {len(uncovered)} uncovered, problems={problems}")
     return 0 if verdict == "pass" else 1
 

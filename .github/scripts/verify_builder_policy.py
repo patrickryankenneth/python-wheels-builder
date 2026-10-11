@@ -38,7 +38,7 @@ USES_RE = re.compile(r"^\s*(?:-\s*)?uses:\s*['\"]?([^\s'\"#]+)")
 class Ctx:
     def __init__(self, *, root, tag, tag_sha, inputs, digests, sboms, vex,
                  spdx=None, assets=None, run=None, git_show=None,
-                 asserts=None, artifacts_dir=None):
+                 asserts=None, artifacts_dir=None, coverage=None):
         self.root = Path(root)
         self.tag = tag
         self.tag_sha = tag_sha
@@ -49,6 +49,7 @@ class Ctx:
         self.vex = vex            # parsed OpenVEX
         self.assets = assets      # list[str] | None
         self.asserts = asserts or {}   # arch -> parsed assert-image.<arch>.json
+        self.coverage = coverage or {}   # arch -> parsed vex-coverage.<arch>.json
         self.artifacts_dir = Path(artifacts_dir) if artifacts_dir else None
         self.run = run or _run
         self.git_show = git_show or _git_show(self.root, tag_sha, self.run)
@@ -330,6 +331,80 @@ def check_gate_script_hash(ctx, params):
     return errs
 
 
+def check_input_hashes(ctx, params):
+    """builder-inputs records the sha256 of each input file, and it equals the sha256 of that
+    file at the tagged commit, for both architectures."""
+    errs = []
+    for field, tpl in params["files"].items():
+        for a in ARCHES:
+            path = tpl.format(arch=a)
+            want = hashlib.sha256(ctx.git_show(path)).hexdigest()
+            got = (ctx.inputs.get(a) or {}).get(field)
+            if got != want:
+                errs.append(f"{a}: {field} {got!r} != sha256 of {path} at {ctx.tag_sha[:12]} ({want})")
+    return errs
+
+
+def check_coverage_report(ctx, params):
+    """vex-coverage.<arch>.json (written by check-vex-coverage.py in release.yml) says pass, is
+    internally consistent, and is tied by sha256 to the released CycloneDX SBOM, the OpenVEX file
+    at the tagged commit and the vulnerability scan stored with the release run."""
+    errs = []
+    vex_want = hashlib.sha256(ctx.git_show(params["vex_path"])).hexdigest()
+    for a in ARCHES:
+        doc = ctx.coverage.get(a)
+        if not isinstance(doc, dict):
+            errs.append(f"{a}: vex-coverage.{a}.json missing")
+            continue
+        if doc.get("verdict") != "pass":
+            errs.append(f"{a}: coverage verdict {doc.get('verdict')!r}, expected 'pass'")
+        if doc.get("scanner") != params["scanner"]:
+            errs.append(f"{a}: coverage scanner {doc.get('scanner')!r} != {params['scanner']!r}")
+        for f in ("scanner_version", "db_built"):
+            val = doc.get(f)
+            if not (isinstance(val, str) and val.strip()):
+                errs.append(f"{a}: coverage report {f} missing or empty")
+        if doc.get("problems") != []:
+            errs.append(f"{a}: coverage report lists problems: {doc.get('problems')!r}")
+        covered, uncovered = doc.get("covered"), doc.get("uncovered")
+        if uncovered != []:
+            errs.append(f"{a}: coverage report has uncovered findings: {uncovered!r}")
+        if not isinstance(covered, list):
+            errs.append(f"{a}: coverage report covered is not a list")
+        elif doc.get("findings") != len(covered):
+            errs.append(f"{a}: coverage findings {doc.get('findings')!r} != {len(covered)} covered findings")
+        sb = ctx.sboms.get(a)
+        n = len(sb.get("components", [])) if isinstance(sb, dict) else None
+        if n is None or doc.get("sbom_components") != n:
+            errs.append(f"{a}: coverage sbom_components {doc.get('sbom_components')!r} != {n!r} components in the released SBOM")
+        hashes = doc.get("input_sha256")
+        if not isinstance(hashes, dict):
+            errs.append(f"{a}: coverage report has no input_sha256")
+            continue
+        for key, name in (("scan", f"vuln-scan.{a}.json"), ("sbom", f"sbom.{a}.cdx.json")):
+            p = artifact_path(ctx, a, name)
+            if p is None or not p.exists():
+                errs.append(f"{a}: {name} not found, cannot compare input_sha256.{key}")
+            elif hashes.get(key) != hashlib.sha256(p.read_bytes()).hexdigest():
+                errs.append(f"{a}: coverage input_sha256.{key} does not match {name}")
+        if hashes.get("vex") != vex_want:
+            errs.append(f"{a}: coverage input_sha256.vex does not match {params['vex_path']} at {ctx.tag_sha[:12]}")
+    return errs
+
+
+def check_coverage_attested(ctx, params):
+    """vex-coverage.<arch>.json is the predicate of a verified attestation on the image digest,
+    made by the release workflow from the release tag."""
+    errs = []
+    sref = params["source_ref_template"].format(tag=ctx.tag)
+    for a in ARCHES:
+        d = _digest_ok(ctx, a, errs)
+        if d:
+            _predicate_equals(ctx, a, d, params, params["predicate_type"], sref,
+                              ctx.coverage.get(a), f"vex-coverage.{a}.json", errs)
+    return errs
+
+
 def check_pinned_crates(ctx, params):
     sboms, errs = _per_arch(ctx, ctx.sboms.get, "SBOM")
     for a, s in sboms.items():
@@ -557,11 +632,13 @@ def load_ctx(a):
     spdx = {x: jload(f(x, f"sbom.{x}.spdx.json")) for x in ARCHES}
     assets = a.assets_file.read_text().split() if a.assets_file else None
     asserts = {x: jload(f(x, f"assert-image.{x}.json")) for x in ARCHES}
+    coverage = {x: jload(f(x, f"vex-coverage.{x}.json")) for x in ARCHES}
     return Ctx(root=a.root, tag=a.tag, tag_sha=a.tag_sha, inputs=inputs, digests=digests,
                sboms={k: v for k, v in cdx.items() if v is not None},
                spdx={k: v for k, v in spdx.items() if v is not None},
                vex=jload(a.vex), assets=assets,
                asserts={k: v for k, v in asserts.items() if v is not None},
+               coverage={k: v for k, v in coverage.items() if v is not None},
                artifacts_dir=a.artifacts_dir)
 
 

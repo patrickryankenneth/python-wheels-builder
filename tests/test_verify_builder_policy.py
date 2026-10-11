@@ -44,7 +44,9 @@ def inputs(a):
     d.update({"source_commit": SHA, "assert_script_sha256": hashlib.sha256(SCRIPT).hexdigest(),
               "base_image_index_digest": "sha256:" + "e" * 64,
               "base_platform_manifest_digest": "sha256:" + "f" * 64,
-              "base_image_ref": "docker.io/library/alpine:3.24"})
+              "base_image_ref": "docker.io/library/alpine:3.24",
+              "apk_lock_sha256": hashlib.sha256(SCRIPT).hexdigest(),
+              "requirements_builder_sha256": hashlib.sha256(SCRIPT).hexdigest()})
     return {**d,
             "runner": {"image_os": "ubuntu24", "image_version": "1", "arch": P("IMG-6")["runner_arch"][a],
                        "docker_version": "28", "buildx_version": "v0"}}
@@ -54,8 +56,13 @@ CONTAINERFILE = ("# base\nFROM docker.io/library/alpine:3.24@sha256:" + "e" * 64
                  "FROM base AS final\nRUN true\n").encode()
 
 
+VEX_BYTES = b'{"@context": "vex-fixture"}\n'
+
+
 def fake_show(path):
-    return CONTAINERFILE if path.endswith("Containerfile") else SCRIPT
+    if path.endswith("Containerfile"): return CONTAINERFILE
+    if path.endswith("builder.openvex.json"): return VEX_BYTES
+    return SCRIPT
 
 
 def good(tmp_path, run=None):
@@ -87,12 +94,27 @@ def good(tmp_path, run=None):
         asserts[a] = {"image": f"{img}@{digs[a]}", "commit": SHA, "sbom_sha256": hashlib.sha256(raw).hexdigest(),
                       "checks": [{"name": n, "result": "PASS"} for n in P("IMG-15")["required_checks"]]}
         run.by_key[(digs[a], P("IMG-16")["predicate_type"])] = copy.deepcopy(asserts[a])
+    # VEX coverage report (IMG-19) is checked against the released SBOM, the scan from the same run
+    # and the VEX file at the tagged commit, and attested (IMG-20)
+    cov = {}
+    for a in v.ARCHES:
+        d = tmp_path / f"sbom-{a}"
+        scan_raw = json.dumps({"scan": a}).encode()
+        (d / f"vuln-scan.{a}.json").write_bytes(scan_raw)
+        cov[a] = {"verdict": "pass", "scanner": P("IMG-19")["scanner"], "scanner_version": "0.120.0",
+                  "db_built": "2026-10-09T00:00:00Z", "sbom_components": len(cdx[a]["components"]),
+                  "findings": 1, "uncovered": [], "problems": [], "vex_statements_without_finding": [],
+                  "covered": [{"ids": ["X"], "package": "bytes", "version": "1.10.1", "status": "affected"}],
+                  "input_sha256": {"scan": hashlib.sha256(scan_raw).hexdigest(),
+                                   "sbom": hashlib.sha256((d / f"sbom.{a}.cdx.json").read_bytes()).hexdigest(),
+                                   "vex": hashlib.sha256(VEX_BYTES).hexdigest()}}
+        run.by_key[(digs[a], P("IMG-20")["predicate_type"])] = copy.deepcopy(cov[a])
     return v.Ctx(root=tmp_path, tag="v1", tag_sha=SHA,
                  inputs=ins, digests=digs,
                  sboms=cdx, spdx=spdx, vex=vex,
                  assets=list(P("IMG-10")["expected_assets"]),
                  run=run, git_show=fake_show,
-                 asserts=asserts, artifacts_dir=tmp_path)
+                 asserts=asserts, coverage=cov, artifacts_dir=tmp_path)
 
 
 def test_every_rule_has_a_check_and_a_bad_fixture():
@@ -162,6 +184,31 @@ def b_lg_empty(c):
 def b_lg_nodigest(c):
     with gzip.open(LOG(c, "aarch64"), "wt") as fh: fh.write("built, but no digest recorded\n")
 def b_lg_notgzip(c): LOG(c, "x86_64").write_bytes(b"not gzip")
+def b_ih_lock(c): c.inputs["aarch64"]["apk_lock_sha256"] = "0" * 64
+def b_ih_req(c): c.inputs["x86_64"]["requirements_builder_sha256"] = "0" * 64
+def b_ih_missing(c): del c.inputs["x86_64"]["apk_lock_sha256"]
+def b_ih_noarch(c): del c.inputs["aarch64"]
+def b_ih_stale(c): c.git_show = lambda p: b"changed after the build\n"
+
+T20 = lambda: P("IMG-20")["predicate_type"]
+def SCAN(c, a): return c.artifacts_dir / f"sbom-{a}" / f"vuln-scan.{a}.json"
+def b_cv_fail(c): c.coverage["x86_64"]["verdict"] = "fail"
+def b_cv_uncovered(c): c.coverage["aarch64"]["uncovered"] = [{"ids": ["Y"], "package": "p", "version": "1"}]
+def b_cv_problems(c): c.coverage["x86_64"]["problems"] = ["vulnerability DB is 9 days old"]
+def b_cv_scanner(c): c.coverage["x86_64"]["scanner"] = "other"
+def b_cv_findings(c): c.coverage["aarch64"]["findings"] = 5
+def b_cv_count(c): c.coverage["x86_64"]["sbom_components"] += 1
+def b_cv_sbom(c): c.coverage["x86_64"]["input_sha256"]["sbom"] = "0" * 64
+def b_cv_vex(c): c.coverage["aarch64"]["input_sha256"]["vex"] = "0" * 64
+def b_cv_scan(c): c.coverage["x86_64"]["input_sha256"]["scan"] = "0" * 64
+def b_cv_scan_missing(c): SCAN(c, "x86_64").unlink()
+def b_cv_nohashes(c): del c.coverage["aarch64"]["input_sha256"]
+def b_cv_none(c): del c.coverage["aarch64"]
+def b_ca_mismatch(c): c.run.by_key[K(c, "aarch64", T20())]["verdict"] = "fail"
+def b_ca_none(c): c.run.by_key.pop(K(c, "x86_64", T20()))
+def b_ca_swapped(c):
+    m, x, a = c.run.by_key, K(c, "x86_64", T20()), K(c, "aarch64", T20())
+    m[x], m[a] = m[a], m[x]
 
 BAD = {"check_image_attested": [b_attest, b_commit],
        "check_inputs_attested": [b_attest, b_ia_mismatch, b_ia_none, b_ia_nodigest, b_ia_swapped],
@@ -172,7 +219,11 @@ BAD = {"check_image_attested": [b_attest, b_commit],
        "check_tag_signed": [b_tag, b_tag_unverified, b_tagger], "check_actions_pinned": [b_pin], "check_release_assets": [b_assets],
        "check_assert_image_passed": [b_as_fail, b_as_dropped, b_as_extra, b_as_sbom, b_as_commit, b_as_image, b_as_none, b_as_swapped, b_ia_nodigest],
        "check_assert_attested": [b_attest, b_ia_nodigest, b_as_none, b_at_mismatch, b_at_none, b_at_swapped],
-       "check_build_log_attested": [b_attest, b_ia_nodigest, b_lg_missing, b_lg_empty, b_lg_nodigest, b_lg_notgzip]}
+       "check_build_log_attested": [b_attest, b_ia_nodigest, b_lg_missing, b_lg_empty, b_lg_nodigest, b_lg_notgzip],
+       "check_input_hashes": [b_ih_lock, b_ih_req, b_ih_missing, b_ih_noarch, b_ih_stale],
+       "check_coverage_report": [b_cv_fail, b_cv_uncovered, b_cv_problems, b_cv_scanner, b_cv_findings, b_cv_count,
+                                 b_cv_sbom, b_cv_vex, b_cv_scan, b_cv_scan_missing, b_cv_nohashes, b_cv_none],
+       "check_coverage_attested": [b_attest, b_ia_nodigest, b_cv_none, b_ca_mismatch, b_ca_none, b_ca_swapped]}
 
 
 @pytest.mark.parametrize("check,mutator", [(k, m) for k, ms in BAD.items() for m in ms])
@@ -286,3 +337,28 @@ def test_build_workflow_attests_the_build_log():
     wf = (ROOT / ".github/workflows/build-environment-image.yml").read_text()
     assert "subject-path: build-log.${{ matrix.arch }}.txt.gz" in wf
     assert "build-log.${{ matrix.arch }}.txt.gz" in wf.split("Upload digest, inputs and build log")[1]
+
+def test_release_workflow_stages_and_attests_the_coverage_report():
+    wf = (ROOT / ".github/workflows/release.yml").read_text()
+    assert P("IMG-20")["predicate_type"] in wf
+    assert P("IMG-19")["vex_path"] in wf
+    assert "predicate-path: out/vex-coverage.${{ matrix.arch }}.json" in wf
+    assert '"vex-coverage.$a.json"' in wf
+    assert wf.index("check-vex-coverage.py") < wf.index("Attest VEX coverage report")
+
+
+def test_check_vex_coverage_output_has_the_fields_the_verifier_reads(tmp_path):
+    import subprocess, sys
+    docs = {"scan": {"descriptor": {"name": "grype", "version": "0", "db": {"built": "2020-01-01T00:00:00Z"}}, "matches": []},
+            "sbom": {"components": []}, "vex": {"statements": []}}
+    files = {}
+    for k, doc in docs.items():
+        files[k] = tmp_path / f"{k}.json"; files[k].write_text(json.dumps(doc))
+    out = tmp_path / "out.json"
+    subprocess.run([sys.executable, str(ROOT / ".github/scripts/check-vex-coverage.py"),
+                    *map(str, files.values()), str(out)], capture_output=True)
+    rep = json.loads(out.read_text())
+    for f in ("verdict", "scanner", "scanner_version", "db_built", "sbom_components",
+              "findings", "covered", "uncovered", "problems"):
+        assert f in rep, f
+    assert rep["input_sha256"] == {k: hashlib.sha256(p.read_bytes()).hexdigest() for k, p in files.items()}

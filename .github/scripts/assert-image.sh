@@ -13,6 +13,10 @@ no_netstack()   { for c in opendal reqwest rustls openssl hyper-rustls; do [ "$(
 pinned()        { [ "$(count_purl "pkg:cargo/$1")" -ge 1 ]; }
 frame_env()     { podman image inspect "$IMG" --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -q '^SCCACHE_MAX_FRAME_LENGTH='; }
 listen_ok()     { podman run --rm -v "$HERE/listen-check.sh:/listen-check.sh:ro" --entrypoint sh "$IMG" /listen-check.sh; }
+no_readelf_objdump() { podman run --rm --entrypoint sh "$IMG" -c '! find / -xdev ! -type d \( -name "*readelf*" -o -name "*objdump*" \) | grep -q .'; }
+no_perl()            { podman run --rm --entrypoint sh "$IMG" -c '! command -v perl >/dev/null 2>&1'; }
+no_pip()             { podman run --rm --entrypoint sh "$IMG" -c '! python3 -m pip --version >/dev/null 2>&1'; }
+no_xcoff()           { podman run --rm --entrypoint sh "$IMG" -c 'for t in ld nm objcopy strip; do $t --help 2>&1 | grep -i "supported targets" | grep -qiE "xcoff|aix|rs6000" && exit 1; done; exit 0'; }
 
 check "control: sccache binary exists in image"           have_sccache
 check "no sccache-dist binary"                            no_dist_bin
@@ -23,4 +27,8 @@ check "pinned bytes@1.10.1 present"                       pinned bytes@1.10.1
 check "pinned rand@0.8.5 present"                         pinned rand@0.8.5
 check "SCCACHE_MAX_FRAME_LENGTH set in image"             frame_env
 check "server seen on loopback; no other listeners"       listen_ok
+check "no readelf or objdump in image"     no_readelf_objdump
+check "no perl in image"                   no_perl
+check "no pip in image"                    no_pip
+check "no XCOFF/AIX target in binutils"    no_xcoff
 exit $fail

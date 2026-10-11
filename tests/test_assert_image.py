@@ -30,6 +30,10 @@ case "$*" in
   *"test -e /opt/cargo/bin/sccache-dist"*) [ "${STUB_DIST:-0}" = 1 ] && exit 0; exit 1 ;;
   *"test -x /opt/cargo/bin/sccache"*)      [ "${STUB_SCCACHE:-1}" = 1 ] && exit 0; exit 1 ;;
   *"/listen-check.sh"*)                    [ "${STUB_LISTEN:-1}" = 1 ] && exit 0; exit 1 ;;
+  *"readelf"*)                             [ "${STUB_READELF:-0}" = 1 ] && exit 1; exit 0 ;;
+  *"command -v perl"*)                     [ "${STUB_PERL:-0}" = 1 ] && exit 1; exit 0 ;;
+  *"pip --version"*)                       [ "${STUB_PIP:-0}" = 1 ] && exit 1; exit 0 ;;
+  *"supported targets"*)                   [ "${STUB_XCOFF:-0}" = 1 ] && exit 1; exit 0 ;;
 esac
 exit 3
 """
@@ -75,6 +79,10 @@ VIOLATIONS = [
     ("rand-pin-missing", "pinned rand@0.8.5 present", dict(sbom_doc=sbom(drop=["rand@0.8.5"]))),
     ("frame-env-missing", "SCCACHE_MAX_FRAME_LENGTH set in image", dict(sbom_doc=sbom(), STUB_FRAME=0)),
     ("unexpected-listener", "server seen on loopback; no other listeners", dict(sbom_doc=sbom(), STUB_LISTEN=0)),
+    ("readelf-or-objdump-present", "no readelf or objdump in image", dict(sbom_doc=sbom(), STUB_READELF=1)),
+    ("perl-present", "no perl in image", dict(sbom_doc=sbom(), STUB_PERL=1)),
+    ("pip-present", "no pip in image", dict(sbom_doc=sbom(), STUB_PIP=1)),
+    ("xcoff-target-present", "no XCOFF/AIX target in binutils", dict(sbom_doc=sbom(), STUB_XCOFF=1)),
 ]
 
 

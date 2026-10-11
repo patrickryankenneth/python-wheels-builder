@@ -1,4 +1,4 @@
-# Policy builder-image v2.1
+# Policy builder-image v2.2
 
 <!-- Generated from policy.json by policy_tool.py render-md. Do not edit. -->
 
@@ -207,7 +207,9 @@ Parameters:
     "sbom.aarch64.cdx.json",
     "sbom.aarch64.spdx.json",
     "sbom.x86_64.cdx.json",
-    "sbom.x86_64.spdx.json"
+    "sbom.x86_64.spdx.json",
+    "vex-coverage.aarch64.json",
+    "vex-coverage.x86_64.json"
   ]
 }
 ```
@@ -343,7 +345,11 @@ Parameters:
     "pinned bytes@1.10.1 present",
     "pinned rand@0.8.5 present",
     "SCCACHE_MAX_FRAME_LENGTH set in image",
-    "server seen on loopback; no other listeners"
+    "server seen on loopback; no other listeners",
+    "no readelf or objdump in image",
+    "no perl in image",
+    "no pip in image",
+    "no XCOFF/AIX target in binutils"
   ]
 }
 ```
@@ -384,6 +390,62 @@ Parameters:
   "repo": "patrickryankenneth/python-wheels-builder",
   "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/build-environment-image.yml",
   "source_ref": "refs/heads/main"
+}
+```
+
+### IMG-18 - Locked inputs match the committed files
+
+- Status: `enforced`
+- Check: `check_input_hashes`
+- Implemented by: build-environment-image.yml writes the hashes to builder-inputs.json; verify_builder_policy.py compares them to the files at the tagged commit
+
+For both architectures, builder-inputs.json records the sha256 of apk.lock.<arch> and of requirements-builder.txt, and each equals the sha256 of that file at the tagged commit. The image was therefore built against the package list and Python requirements committed at the release tag.
+
+Parameters:
+
+```json
+{
+  "files": {
+    "apk_lock_sha256": "environments/alpine-3.24-musl/apk.lock.{arch}",
+    "requirements_builder_sha256": "environments/alpine-3.24-musl/requirements-builder.txt"
+  }
+}
+```
+
+### IMG-19 - VEX coverage report passes
+
+- Status: `enforced`
+- Check: `check_coverage_report`
+- Implemented by: release.yml runs check-vex-coverage.py (Grype scan of the image against the SBOM and VEX) and writes vex-coverage.<arch>.json; verify_builder_policy.py checks the report against the released files
+
+For both architectures, the release carries vex-coverage.<arch>.json with verdict pass: no problems, no vulnerability finding without a matching VEX statement, and a finding count equal to the covered findings. Its recorded sha256 values match the released CycloneDX SBOM, the OpenVEX file at the tagged commit and the vulnerability scan stored with the release run's artifacts. The scan is not a release asset and is not attested, so its hash only ties the report to that run's files. The report shows that every finding Grype reported at release time is fixed or has a VEX statement; it says nothing about vulnerabilities Grype does not know of.
+
+Parameters:
+
+```json
+{
+  "scanner": "grype",
+  "vex_path": "environments/alpine-3.24-musl/vex/builder.openvex.json"
+}
+```
+
+### IMG-20 - VEX coverage report is attested
+
+- Status: `enforced`
+- Check: `check_coverage_attested`
+- Implemented by: release.yml attests vex-coverage.<arch>.json on the image digest; verify_builder_policy.py compares the released file to the attested predicate
+
+For both architectures, vex-coverage.<arch>.json is the predicate of a GitHub attestation on the image digest, with the predicate type named in the parameters, from the release workflow, from the release tag, at the tagged commit.
+
+Parameters:
+
+```json
+{
+  "image": "ghcr.io/patrickryankenneth/python-wheels-builder-alpine",
+  "predicate_type": "https://github.com/patrickryankenneth/python-wheels-builder/predicate/vex-coverage/v1",
+  "repo": "patrickryankenneth/python-wheels-builder",
+  "signer_workflow": "patrickryankenneth/python-wheels-builder/.github/workflows/release.yml",
+  "source_ref_template": "refs/tags/{tag}"
 }
 ```
 
